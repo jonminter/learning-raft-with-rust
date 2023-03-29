@@ -19,6 +19,7 @@ make run-cluster
 ```
 
 Use client to send GET/SET request to servers:
+
 GET
 
 ```
