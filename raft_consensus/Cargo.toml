@@ -1,0 +1,40 @@
+[package]
+name = "raft_consensus"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[env]
+RUST_LOG={ value = "debug", force = true }
+
+[dependencies]
+tracing = "0.1"
+tracing-subscriber = "0.3"
+rand = "0.8.5"
+rand_distr = "0.4.3"
+rand_chacha = "*"
+divrem = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+bincode = "*"
+lazy_static = "1.4.0"
+clap = { version = "4.0.32", features = ["derive"] }
+mock_instant = { version = "0.2", features = ["sync"] }
+uuid = { version = "0.8", features = ["serde", "v4"] }
+oneshot = "*"
+sha2 = "0.10"
+
+
+[dev-dependencies]
+env_logger = "*"
+strfmt = "*"
+test-log = "*"
+quickcheck = "1.0.3"
+tempfile = "*"
+
+[lib]
+name = "raft_consensus"
+path = "src/lib.rs"
+
+[features]
+mock_time = []
+

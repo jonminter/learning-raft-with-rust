@@ -1,0 +1,65 @@
+syntax = "proto3";
+package raft;
+
+service RaftConsensus {
+    rpc RequestVote(VoteRequest) returns (VoteResponse);
+    rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+}
+
+message ClusterMembershipChange {
+    uint64 node_id = 1;
+    enum ChangeType {
+        ADD = 0;
+        REMOVE = 1;
+    }
+    ChangeType change_type = 2;
+}
+
+message ApplicationCommand {
+    bytes serialized = 1;    
+}
+
+message LogEntry {
+    uint64 log_index = 1;
+    uint64 term = 2;
+    oneof command {
+        ApplicationCommand application_command = 3;
+        ClusterMembershipChange cluster_membership_change = 4;
+    }
+}
+
+message VoteRequest {
+    string request_id = 1;
+    uint64 from = 2;
+    uint64 to = 3;
+    uint64 term = 4;
+    uint64 last_log_index = 5;
+    uint64 last_log_term = 6;
+}
+
+message VoteResponse {
+    string request_id = 1;
+    uint64 from = 2;
+    uint64 to = 3;
+    uint64 term = 4;
+    bool vote_granted = 5;
+}
+
+message AppendEntriesRequest {
+    string request_id = 1;
+    uint64 from = 2;
+    uint64 to = 3;
+    uint64 term = 4;
+    uint64 prev_log_term = 5;
+    uint64 prev_log_index = 6;
+    repeated LogEntry entries = 7;
+    uint64 leader_commit_index = 8; 
+}
+
+message AppendEntriesResponse {
+    string request_id = 1;
+    uint64 from = 2;
+    uint64 to = 3;
+    uint64 term = 4;
+    bool added_entries_successfully = 5;
+}

@@ -1,0 +1,26 @@
+
+[package]
+name = "single_value_store_cluster"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[env]
+RUST_LOG={ value = "debug", force = true }
+
+[dependencies]
+steward = "*"
+tokio = "*"
+lazy_static = "*"
+
+[build-dependencies]
+
+[dev-dependencies]
+
+[[bin]]
+name = "single_value_store_cluster"
+path = "src/main.rs"
+
+[features]
+mock_time = []
+

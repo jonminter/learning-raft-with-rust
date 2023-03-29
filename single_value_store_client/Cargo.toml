@@ -1,0 +1,29 @@
+
+[package]
+name = "single_value_store_client"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[env]
+RUST_LOG={ value = "debug", force = true }
+
+[dependencies]
+tracing = "0.1"
+tracing-subscriber = "0.3"
+single_value_store_proto = { path = "../single_value_store_proto" }
+tonic = "0.8"
+tokio = "*"
+clap = "*"
+
+[build-dependencies]
+
+[dev-dependencies]
+
+[[bin]]
+name = "single_value_store_client"
+path = "src/main.rs"
+
+[features]
+mock_time = []
+

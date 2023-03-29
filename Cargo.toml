@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "raft_consensus",
+    "raft_grpc",
+    "single_value_store",
+    "single_value_store_proto",
+    "single_value_store_client",
+    "single_value_store_cluster",
+]

@@ -1,0 +1,49 @@
+
+[package]
+name = "raft_grpc"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[env]
+RUST_LOG={ value = "debug", force = true }
+
+[dependencies]
+raft_consensus = {path = "../raft_consensus"}
+tracing = "0.1"
+tracing-subscriber = "0.3"
+rand = "0.8.5"
+rand_distr = "0.4.3"
+divrem = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+bincode = "*"
+lazy_static = "1.4.0"
+tonic = "0.8"
+prost = "0.11"
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "fs"] }
+clap = { version = "4.0.32", features = ["derive"] }
+mock_instant = { version = "0.2", features = [] }
+uuid = { version = "0.8", features = ["serde", "v4"] }
+futures = "0.3.25"
+async-trait = "0.1.64"
+oneshot = "*"
+
+[build-dependencies]
+tonic-build = "0.8"
+
+[dev-dependencies]
+env_logger = "*"
+strfmt = "*"
+test-log = "*"
+quickcheck = "1.0.3"
+quickcheck_async = "*"
+tempfile = "*"
+tokio-test = "*"
+
+[lib]
+name = "raft_grpc"
+path = "src/lib.rs"
+
+[features]
+mock_time = []
+

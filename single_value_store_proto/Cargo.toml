@@ -1,0 +1,27 @@
+
+[package]
+name = "single_value_store_proto"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[env]
+RUST_LOG={ value = "debug", force = true }
+
+[dependencies]
+tonic = "0.8"
+prost = "0.11"
+
+
+[build-dependencies]
+tonic-build = "0.8"
+
+[dev-dependencies]
+
+[lib]
+name = "single_value_store_proto"
+path = "src/lib.rs"
+
+[features]
+mock_time = []
+
