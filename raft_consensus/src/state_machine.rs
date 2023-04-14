@@ -424,7 +424,7 @@ impl Transitions for NodeState<Leader> {
                         let ack = self.ack_append_entries(storage, req, false);
                         Ok((self.into(), ack))
                     } else {
-                        unreachable!("BUG: If leader receives an append entries from a higher term, it should have become a follower")
+                        unreachable!("BUG: If leader receives an append entries from a higher term, it should have become a follower already")
                     }
                 }
             },
@@ -527,6 +527,11 @@ impl Transitions for NodeState<Candidate> {
                     if req.term < storage.current_term() {
                         let ack = self.ack_append_entries(storage, req, false);
                         Ok((self.into(), ack))
+                    } else if req.term == storage.current_term() {
+                        let mut follower_state: NodeState<Follower> = self.transition_to();
+                        let ack = follower_state.ack_append_entries(storage, req, true);
+                        follower_state.reset_election_timer(config, rng);
+                        Ok((follower_state.into(), ack))
                     } else {
                         unreachable!("BUG: If candidate receives an append entries from a higher term, it should have become a follower already")
                     }
