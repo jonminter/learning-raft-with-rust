@@ -159,7 +159,7 @@ pub fn start_raft_in_new_thread<LC: LogCommand>(
                     Node::Leader(_) => RaftNodeState::Leader,
                 },
                 current_term: storage.current_term(),
-                voted_for: storage.voted_for(),
+                voted_for: storage.voted_for_in_current_term(),
                 leader_for_term: match &new_state {
                     Node::Leader(_) => Some(server_id),
                     Node::Follower(follower) => follower.inner.leader_id,
