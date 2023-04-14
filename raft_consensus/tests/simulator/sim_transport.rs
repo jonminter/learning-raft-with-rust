@@ -8,7 +8,7 @@ use raft_consensus::{
     rpc_messages::{ReplyTo, Request, RpcMessage},
     system_clock, RaftTransportBridge, RaftTransportError,
 };
-use tracing::trace;
+use tracing::{debug, trace};
 
 use super::common::{ClockAdvance, SimLogCommand};
 
@@ -65,6 +65,7 @@ impl RaftTransportBridge<SimLogCommand> for SimNetworkRaftTransport {
             match self.inbound_message_rx.try_recv() {
                 Ok(message) => return Ok(Some(message)),
                 Err(TryRecvError::Empty) => {
+                    debug!("Simulated network transport found no incoming messages");
                     let time_waited = system_clock::now() - started_waiting_at;
                     if time_waited >= max_wait {
                         return Ok(None);
@@ -72,6 +73,7 @@ impl RaftTransportBridge<SimLogCommand> for SimNetworkRaftTransport {
                     thread::park();
                 }
                 Err(TryRecvError::Disconnected) => {
+                    debug!("Simulated network transport inbound channel disconnected");
                     return Err(RaftTransportError::TransportShutdown);
                 }
             }
@@ -102,6 +104,7 @@ mod tests {
 
     use mock_instant::MockClock;
     use std::time::Duration;
+    use tracing::debug;
 
     use raft_consensus::{
         rpc_messages::{ReplyTo, RpcMessage, Vote},
@@ -151,22 +154,30 @@ mod tests {
     #[test]
     fn sim_transport_should_timeout_waiting_for_next_message() {
         let (outbound_tx, _) = std::sync::mpsc::channel();
-        let (_, inbound_rx) = std::sync::mpsc::channel();
+        let (_inbound_tx, inbound_rx) = std::sync::mpsc::channel();
         let (timer_tx, _timer_rx) = std::sync::mpsc::channel();
 
         let mut transport = super::SimNetworkRaftTransport::new(outbound_tx, inbound_rx, timer_tx);
 
         let thread_handle = std::thread::spawn(move || {
+            debug!("Waiting for message (should timeout)...");
             let message = transport.wait_for_next_incoming_message(Duration::from_millis(127));
+            debug!("Done waiting for message (should timeout)...");
             if let Ok(Some(_)) = message {
+                debug!("Received message (should not have)...");
                 panic!("Should not have received a message")
             } else {
+                debug!("Did not receive message (should not have)...");
                 true
             }
         });
 
+        debug!("Waiting for thread to park itself...");
+
         // Wait for the thread to park itself (TODO - is there a better way to do this?)
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(1000));
+
+        debug!("Unparking thread...");
 
         // Should park itself again since the clock hasn't changed
         thread_handle.thread().unpark();
