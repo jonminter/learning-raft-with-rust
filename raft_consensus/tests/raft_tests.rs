@@ -120,6 +120,8 @@ fn should_elect_leader_during_network_partition_if_we_have_quorum() {
 
     sim.run_until_time(SIMULATION_DURATION);
     assert_eq!(sim.results.was_leader_elected, true);
+
+    // 2 & 4 in a partition without quorum, they should not be able to be elected leader
     assert!(!sim.results.all_elected_leaders.contains(&ServerId(2)));
     assert!(!sim.results.all_elected_leaders.contains(&ServerId(4)));
 }

@@ -27,9 +27,11 @@ sha2 = "0.10"
 [dev-dependencies]
 env_logger = "*"
 strfmt = "*"
-test-log = "*"
+test-log = {version="*", defaule-features = false, features=["trace"]}
 quickcheck = "1.0.3"
 tempfile = "*"
+tracing-subscriber = {version = "0.3", default-features = false, features = ["env-filter", "fmt"]}
+
 
 [lib]
 name = "raft_consensus"

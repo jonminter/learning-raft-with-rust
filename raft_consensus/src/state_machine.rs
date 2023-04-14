@@ -13,6 +13,7 @@ use rand_chacha::ChaCha8Rng;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::time::Duration;
+use tracing::debug;
 use tracing::info;
 use tracing::trace;
 use uuid::Uuid;
@@ -72,7 +73,7 @@ impl Node {
         event: &Event<C>,
         config: &RaftConfig,
         rng: &mut ChaCha8Rng,
-    ) -> (Self, Vec<Action<C>>) {
+    ) -> Result<(Self, Vec<Action<C>>), PersistentStorageError> {
         let (should_become_follower, new_term) = match event {
             Event::IncomingRpc(RpcMessage::Request(r)) => {
                 (r.term() > storage.current_term(), r.term())
@@ -90,20 +91,24 @@ impl Node {
                 new_term,
                 storage.current_term()
             );
-            storage.update_term(new_term).sync();
+            storage.update_term(new_term).sync()?;
             let mut follower_state: NodeState<Follower> = match self {
                 Node::Leader(state) => state.transition_to(),
                 Node::Follower(state) => state,
                 Node::Candidate(state) => state.transition_to(),
             };
 
+            // Ensure we don't have a leader ID set, if we were already follower this would be set
+            // but since there is a newer term there might be a new leader
+            // if so new leader will send us a heartbeat eventually and we'll update this
+            follower_state.inner.leader_id = None;
             let election_timeout = follower_state.reset_election_timer(config, rng);
-            (
+            Ok((
                 follower_state.into(),
                 vec![Action::StartTickTimer(election_timeout)],
-            )
+            ))
         } else {
-            (self, vec![])
+            Ok((self, vec![]))
         }
     }
 
@@ -116,17 +121,17 @@ impl Node {
     ) -> Result<(Self, Vec<Action<C>>), PersistentStorageError> {
         self.update_clock();
 
-        let (new_node, mut maybe_tick_timer) =
-            self.if_rpc_message_has_higher_term_become_follower(storage, &event, config, rng);
+        self.if_rpc_message_has_higher_term_become_follower(storage, &event, config, rng)
+            .and_then(|(new_node, mut maybe_tick_timer)| {
+                let (new_node, mut actions) = match new_node {
+                    Self::Leader(state) => state.handle_event(event, storage, config, rng)?,
+                    Self::Follower(state) => state.handle_event(event, storage, config, rng)?,
+                    Self::Candidate(state) => state.handle_event(event, storage, config, rng)?,
+                };
 
-        let (new_node, mut actions) = match new_node {
-            Self::Leader(state) => state.handle_event(event, storage, config, rng)?,
-            Self::Follower(state) => state.handle_event(event, storage, config, rng)?,
-            Self::Candidate(state) => state.handle_event(event, storage, config, rng)?,
-        };
-
-        actions.append(&mut maybe_tick_timer);
-        Ok((new_node, actions))
+                actions.append(&mut maybe_tick_timer);
+                Ok((new_node, actions))
+            })
     }
 }
 impl From<NodeState<Leader>> for Node {
@@ -187,10 +192,6 @@ macro_rules! has_election_timer {
                 let election_timeout = Duration::from_millis(rng.gen_range(
                     config.min_election_timeout_ms.into()..config.max_election_timeout_ms.into(),
                 ));
-                trace!(
-                    "Reseting election timeout to {timeout:?} for node",
-                    timeout = election_timeout,
-                );
 
                 self.inner.election_timeout = election_timeout;
                 self.inner.last_election_timer_started = system_clock::now();
@@ -523,7 +524,7 @@ impl Transitions for NodeState<Candidate> {
                 }
 
                 Request::AppendEntries(req) => {
-                    if req.term <= storage.current_term() {
+                    if req.term < storage.current_term() {
                         let ack = self.ack_append_entries(storage, req, false);
                         Ok((self.into(), ack))
                     } else {
@@ -535,7 +536,8 @@ impl Transitions for NodeState<Candidate> {
             Event::IncomingRpc(RpcMessage::Reply(reply)) => match reply {
                 ReplyTo::RequestVote(vote) => {
                     let qorum = DivCeil::div_ceil(self.other_servers.len() + 1, 2);
-                    if vote.vote_granted {
+
+                    if vote.term == storage.current_term() && vote.vote_granted {
                         self.inner.votes_received.insert(vote.from);
 
                         if self.inner.votes_received.len() >= qorum {

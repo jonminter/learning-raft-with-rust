@@ -65,7 +65,6 @@ impl RaftTransportBridge<SimLogCommand> for SimNetworkRaftTransport {
             match self.inbound_message_rx.try_recv() {
                 Ok(message) => return Ok(Some(message)),
                 Err(TryRecvError::Empty) => {
-                    debug!("Simulated network transport found no incoming messages");
                     let time_waited = system_clock::now() - started_waiting_at;
                     if time_waited >= max_wait {
                         return Ok(None);
@@ -73,7 +72,6 @@ impl RaftTransportBridge<SimLogCommand> for SimNetworkRaftTransport {
                     thread::park();
                 }
                 Err(TryRecvError::Disconnected) => {
-                    debug!("Simulated network transport inbound channel disconnected");
                     return Err(RaftTransportError::TransportShutdown);
                 }
             }
@@ -160,14 +158,10 @@ mod tests {
         let mut transport = super::SimNetworkRaftTransport::new(outbound_tx, inbound_rx, timer_tx);
 
         let thread_handle = std::thread::spawn(move || {
-            debug!("Waiting for message (should timeout)...");
             let message = transport.wait_for_next_incoming_message(Duration::from_millis(127));
-            debug!("Done waiting for message (should timeout)...");
             if let Ok(Some(_)) = message {
-                debug!("Received message (should not have)...");
                 panic!("Should not have received a message")
             } else {
-                debug!("Did not receive message (should not have)...");
                 true
             }
         });
