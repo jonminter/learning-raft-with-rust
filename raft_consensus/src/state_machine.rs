@@ -329,7 +329,7 @@ impl<St: State> NodeState<St> {
         PS: PersistentStorage<C>,
     {
         info!(
-            "{server_id:?}: Vote NO for candidate {candidate_id:?} because {reason:?} (my term: {my_term:?}, candidate term: {candidate_term:?})",
+            "{server_id:?}: Vote NO for candidate {candidate_id:?} because {reason:?} (my term: {my_term:?}, vote term: {candidate_term:?})",
             server_id = self.server_id,
             candidate_id = vote_req.from,
             reason = reason,
@@ -519,7 +519,12 @@ impl Transitions for NodeState<Candidate> {
 
             Event::IncomingRpc(RpcMessage::Request(rpc_req)) => match rpc_req {
                 Request::RequestVote(req) => {
-                    let vote = self.vote_no(storage, req, "I am a candidate");
+                    let vote_no_reason = if req.term < storage.current_term() {
+                        "I am in a higher term than this vote request"
+                    } else {
+                        "I am a candidate for the same term"
+                    };
+                    let vote = self.vote_no(storage, req, vote_no_reason);
                     Ok((self.into(), vote))
                 }
 
@@ -619,17 +624,11 @@ impl NodeState<Follower> {
         // If votedFor is null or candidateId, and candidate’s log is at
         // least as up-to-date as receiver’s log (TODO), grant vote (§5.2, §5.4)
         let candidate_has_same_or_newer_term = vote_req.term >= storage.current_term();
-        let have_we_voted_for_this_term = storage
-            .voted_for()
-            .map(|(term, _)| term == vote_req.term)
-            .unwrap_or(false);
-        let voted_for_candidate_already = storage
-            .voted_for()
-            .map(|(_, id)| id == vote_req.from)
-            .unwrap_or(false);
+        let have_we_voted_for_this_term = storage.voted_for().is_some();
+        let voted_for_same_candidate_already = storage.voted_for().map(|_| true).unwrap_or(false);
 
         let vote_granted = candidate_has_same_or_newer_term
-            && (!have_we_voted_for_this_term || voted_for_candidate_already);
+            && (!have_we_voted_for_this_term || voted_for_same_candidate_already);
 
         if vote_granted {
             info!(

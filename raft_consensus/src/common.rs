@@ -62,7 +62,7 @@ pub trait PersistentStorage<C: LogCommand>: Send {
     /// Returns the current term of the Raft node.
     fn current_term(&self) -> TermIndex;
     /// Returns the server that the Raft node voted for in the current term.
-    fn voted_for(&self) -> Option<(TermIndex, ServerId)>;
+    fn voted_for(&self) -> Option<ServerId>;
 
     /// Updates the current term of the Raft node.
     fn update_term(&mut self, term: TermIndex) -> &mut Self;

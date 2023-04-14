@@ -110,8 +110,16 @@ impl<C: LogCommand> DefaultPersistentStorage<C> {
 }
 
 impl<C: LogCommand> PersistentStorage<C> for DefaultPersistentStorage<C> {
-    fn voted_for(&self) -> Option<(TermIndex, ServerId)> {
-        self.election.voted_for
+    fn voted_for(&self) -> Option<ServerId> {
+        self.election
+            .voted_for
+            .and_then(|(last_vote_term, server_id)| {
+                if last_vote_term == self.election.current_term {
+                    Some(server_id)
+                } else {
+                    None
+                }
+            })
     }
 
     fn update_term(&mut self, term: TermIndex) -> &mut Self {

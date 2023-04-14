@@ -26,7 +26,7 @@ pub struct RaftStateEvent {
     pub server_id: ServerId,
     pub current_state: RaftNodeState,
     pub current_term: TermIndex,
-    pub voted_for: Option<(TermIndex, ServerId)>,
+    pub voted_for: Option<ServerId>,
     pub leader_for_term: Option<ServerId>,
 }
 
