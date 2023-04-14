@@ -1,3 +1,5 @@
+use crate::PersistentStorageError;
+
 use super::common::{LogCommand, LogEntry, LogIndex, PersistentStorage, ServerId, TermIndex};
 use std::fmt::Debug;
 use std::fs::File;
@@ -72,31 +74,38 @@ impl<C: LogCommand> DefaultPersistentStorage<C> {
                 f.try_clone()
                     .map(|f_cloned| (BufReader::new(f), BufWriter::new(f_cloned)))
             })
-            .expect("Could not open election file!");
+            .expect("OPEN ELEC FILE: Could not open election file and set file size!");
 
         if election_file_exists {
             let header = get_election_bincode()
                 .deserialize_from(reader)
-                .expect("Could not deserialize election file!");
+                .expect("OPEN ELEC FILE: Could not deserialize election file!");
             (header, writer)
         } else {
             let election = Election {
                 current_term: TermIndex(0),
                 voted_for: None,
             };
-            Self::write_election_state(&election, &mut writer);
-            writer.flush().expect("Could not fsync header to WAL!");
+            Self::write_election_state(&election, &mut writer)
+                .expect("OPEN ELEC FILE: Could not write initial state to election file!");
+            writer
+                .flush()
+                .expect("OPEN ELEC FILE: Could not fsync header to WAL!");
             (election, writer)
         }
     }
 
-    fn write_election_state(election: &Election, election_writer: &mut BufWriter<File>) {
+    fn write_election_state(
+        election: &Election,
+        election_writer: &mut BufWriter<File>,
+    ) -> Result<(), PersistentStorageError> {
         election_writer
             .rewind()
-            .expect("Could not rewind WAL log file handle to beginning to write header!");
+            .map_err(|_| PersistentStorageError::IoError)?;
         get_election_bincode()
             .serialize_into(election_writer, election)
-            .expect("Could not serialize WAL log entry!");
+            .map_err(|_| PersistentStorageError::IoError)?;
+        Ok(())
     }
 }
 
@@ -115,11 +124,12 @@ impl<C: LogCommand> PersistentStorage<C> for DefaultPersistentStorage<C> {
         self
     }
 
-    fn sync(&mut self) {
-        Self::write_election_state(&self.election, &mut self.election_writer);
-        self.election_writer
-            .flush()
-            .expect("Could not fsync header to WAL!");
+    fn sync(&mut self) -> Result<(), PersistentStorageError> {
+        Self::write_election_state(&self.election, &mut self.election_writer)?;
+        match self.election_writer.flush() {
+            Ok(_) => Ok(()),
+            Err(_) => Err(PersistentStorageError::IoError),
+        }
     }
 
     fn current_term(&self) -> TermIndex {

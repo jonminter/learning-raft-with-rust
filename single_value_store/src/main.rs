@@ -53,7 +53,7 @@ fn parse_cluster_members(cluster_members: &str) -> HashMap<ServerId, SocketAddr>
             .unwrap()
             .to_string()
             .parse()
-            .expect("Could not parse server address");
+            .expect("SERVER INIT: Could not parse server address");
         cluster.insert(ServerId(id), addr);
     }
     cluster
@@ -69,7 +69,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let addr = SocketAddr::new(
-        "0.0.0.0".parse().expect("Could not parse server IP"),
+        "0.0.0.0"
+            .parse()
+            .expect("SERVER INIT: Could not parse server IP"),
         args.port,
     );
     let server_id = ServerId(args.server_id.into());

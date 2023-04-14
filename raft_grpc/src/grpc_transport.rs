@@ -4,10 +4,11 @@ use crate::proto::raft_consensus_client::RaftConsensusClient;
 pub use raft_consensus::rpc_messages;
 use raft_consensus::rpc_messages::RpcMessage;
 use raft_consensus::system_clock;
+use raft_consensus::RaftTransportError;
 use raft_consensus::ServerId;
 use tonic::transport::Channel;
 
-use raft_consensus::transport::RaftTransportBridge;
+use raft_consensus::RaftTransportBridge;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::thread;
@@ -56,7 +57,7 @@ impl RaftTransportBridge<u64> for RaftGrpcTransportBridge {
     fn wait_for_next_incoming_message(
         &mut self,
         max_wait: std::time::Duration,
-    ) -> Option<RpcMessage<u64>> {
+    ) -> Result<Option<RpcMessage<u64>>, RaftTransportError> {
         let current_thread = thread::current();
         let current_thread_id = current_thread.id();
         let saved_handle = self.thread_handle.get_or_insert(current_thread);
@@ -73,37 +74,45 @@ impl RaftTransportBridge<u64> for RaftGrpcTransportBridge {
             match self.raft_input_rx.try_recv() {
                 Ok(TransportInput::Request(reply_tx, message)) => {
                     self.reply_channels.insert(message.request_id(), reply_tx);
-                    return Some(RpcMessage::Request(message));
+                    break Ok(Some(RpcMessage::Request(message)));
                 }
                 Ok(TransportInput::Reply(reply)) => {
-                    return Some(RpcMessage::Reply(reply));
+                    break Ok(Some(RpcMessage::Reply(reply)));
                 }
                 Err(mpsc::error::TryRecvError::Empty) => {
                     let time_waited = system_clock::now() - started_waiting_at;
                     if time_waited >= max_wait {
-                        break None;
+                        break Ok(None);
                     }
                     thread::park_timeout(max_wait - time_waited);
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => {
-                    panic!("Raft gRPC transport bridge disconnected!");
+                    break Err(RaftTransportError::TransportShutdown);
                 }
             }
         }
     }
 
-    fn enqueue_reply(&mut self, reply: rpc_messages::ReplyTo) {
-        self.reply_channels
+    fn enqueue_reply(&mut self, reply: rpc_messages::ReplyTo) -> Result<(), RaftTransportError> {
+        match self
+            .reply_channels
             .remove(&reply.request_id())
-            .expect("BUG ALERT: No reply channel for this request!")
+            .expect("GRPC BUG ALERT: No reply channel for this request!")
             .send(reply)
-            .expect("gRPC transport repy receiver disconnected!");
+        {
+            Ok(_) => Ok(()),
+            Err(_) => Err(RaftTransportError::TransportShutdown),
+        }
     }
 
-    fn enqueue_outgoing_request(&mut self, request: rpc_messages::Request<u64>) {
-        self.raft_output_tx
-            .send(request)
-            .expect("gRPC transport outgoing message receiver disconnected!");
+    fn enqueue_outgoing_request(
+        &mut self,
+        request: rpc_messages::Request<u64>,
+    ) -> Result<(), RaftTransportError> {
+        match self.raft_output_tx.send(request) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(RaftTransportError::TransportShutdown),
+        }
     }
 }
 
@@ -123,7 +132,7 @@ async fn start_outgoing_message_sender(
 
                         let client = server_grpc_clients
                             .get_mut(&to)
-                            .expect("BUG ALERT: No gRPC client for this server!");
+                            .expect("GRPC BUG ALERT: No gRPC client for this server!");
 
                         let _ = client
                             .request_vote(Request::new(vote_req))
@@ -153,7 +162,7 @@ async fn start_outgoing_message_sender(
 
                         let client = server_grpc_clients
                             .get_mut(&to)
-                            .expect("BUG ALERT: No gRPC client for this server!");
+                            .expect("GRPC BUG ALERT: No gRPC client for this server!");
 
                         let _ = client
                                 .append_entries(Request::new(append_entries_req))
@@ -200,7 +209,7 @@ impl RaftGrpcTransport {
         for (other_server_id, server_address) in server_addresses {
             if other_server_id != server_id {
                 let channel = Channel::from_shared(format!("http://{}", server_address))
-                    .expect("Failed to create channel")
+                    .expect("GRPC INIT: Failed to create channel")
                     .connect_lazy();
                 server_grpc_clients
                     .insert(other_server_id, RaftConsensusClient::new(channel.clone()));

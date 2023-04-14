@@ -7,7 +7,7 @@ use crate::simulator::{
 use raft_consensus::{RaftConfig, ServerId};
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use std::{collections::HashSet, fs::canonicalize, path, time::Duration};
+use std::{collections::HashSet, time::Duration};
 use tempfile::TempDir;
 use tracing::info;
 mod simulator;
@@ -34,6 +34,8 @@ fn new_rng(maybe_seed: Option<u64>) -> ChaCha8Rng {
         }
     }
 }
+
+const SIMULATION_DURATION: Duration = Duration::from_secs(300);
 
 #[test]
 fn should_elect_leader_without_network_partition() {
@@ -63,7 +65,7 @@ fn should_elect_leader_without_network_partition() {
         log_file.as_path(),
     );
 
-    sim.run_until_time(Duration::from_secs(60));
+    sim.run_until_time(SIMULATION_DURATION);
 
     assert_eq!(sim.results.was_leader_elected, true);
 }
@@ -116,7 +118,7 @@ fn should_elect_leader_during_network_partition_if_we_have_quorum() {
         ]),
     });
 
-    sim.run_until_time(Duration::from_secs(60));
+    sim.run_until_time(SIMULATION_DURATION);
     assert_eq!(sim.results.was_leader_elected, true);
     assert!(!sim.results.all_elected_leaders.contains(&ServerId(2)));
     assert!(!sim.results.all_elected_leaders.contains(&ServerId(4)));
@@ -176,7 +178,7 @@ fn should_not_be_able_to_elect_leader_without_quorum() {
         ]),
     });
 
-    sim.run_until_time(Duration::from_secs(60));
+    sim.run_until_time(SIMULATION_DURATION);
     assert_eq!(sim.results.was_leader_elected, false);
     drop(sim);
 }

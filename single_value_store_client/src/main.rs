@@ -31,10 +31,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     let channel = Channel::from_shared(format!("http://{}", cli.server_address))
-        .expect("Failed to create channel")
+        .expect("CLIENT INIT: Failed to create channel")
         .connect()
         .await
-        .expect("Failed to connect to server");
+        .expect("CLIENT INIT: Failed to connect to server");
 
     let mut client = SingleValueStoreClient::new(channel.clone());
 

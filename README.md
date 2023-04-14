@@ -29,5 +29,5 @@ SERVER=0 make client-get
 SET
 
 ```
-SERVER=3 VALUE=12345 client-set
+SERVER=3 VALUE=12345 make client-set
 ```

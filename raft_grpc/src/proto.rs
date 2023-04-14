@@ -11,7 +11,8 @@ tonic::include_proto!("raft"); // The string specified here must match the proto
 impl From<VoteRequest> for rpc_messages::RequestVote {
     fn from(vote_request: VoteRequest) -> Self {
         rpc_messages::RequestVote {
-            request_id: Uuid::parse_str(&vote_request.request_id).expect("Invalid UUID!"),
+            request_id: Uuid::parse_str(&vote_request.request_id)
+                .expect("GRPC CONVERT: Invalid UUID!"),
             from: ServerId(vote_request.from),
             to: ServerId(vote_request.to),
             term: TermIndex(vote_request.term),
@@ -23,7 +24,8 @@ impl From<VoteRequest> for rpc_messages::RequestVote {
 impl From<VoteResponse> for rpc_messages::Vote {
     fn from(vote_response: VoteResponse) -> Self {
         rpc_messages::Vote {
-            request_id: Uuid::parse_str(&vote_response.request_id).expect("Invalid UUID!"),
+            request_id: Uuid::parse_str(&vote_response.request_id)
+                .expect("GRPC CONVERT: Invalid UUID!"),
             from: ServerId(vote_response.from),
             to: ServerId(vote_response.to),
             term: TermIndex(vote_response.term),
@@ -34,7 +36,8 @@ impl From<VoteResponse> for rpc_messages::Vote {
 impl From<AppendEntriesRequest> for rpc_messages::AppendEntries<u64> {
     fn from(append_entries_request: AppendEntriesRequest) -> Self {
         rpc_messages::AppendEntries {
-            request_id: Uuid::parse_str(&append_entries_request.request_id).expect("Invalid UUID!"),
+            request_id: Uuid::parse_str(&append_entries_request.request_id)
+                .expect("GRPC CONVERT: Invalid UUID!"),
             from: ServerId(append_entries_request.from),
             to: ServerId(append_entries_request.to),
             term: TermIndex(append_entries_request.term),
@@ -50,11 +53,13 @@ impl From<AppendEntriesRequest> for rpc_messages::AppendEntries<u64> {
                             log_entry::Command::ApplicationCommand(ApplicationCommand {
                                 serialized,
                             }) => u64::from_be_bytes(
-                                serialized.try_into().expect("Invalid application command!"),
+                                serialized
+                                    .try_into()
+                                    .expect("GRPC CONVERT: Invalid application command!"),
                             ),
                             _ => panic!("Unexpected command!"),
                         })
-                        .expect("No command"),
+                        .expect("GRPC CONVERT: No command"),
                 })
                 .collect(),
             prev_log_index: LogIndex(append_entries_request.prev_log_index),
@@ -67,7 +72,7 @@ impl From<AppendEntriesResponse> for rpc_messages::AppendEntriesAck {
     fn from(append_entries_response: AppendEntriesResponse) -> Self {
         rpc_messages::AppendEntriesAck {
             request_id: Uuid::parse_str(&append_entries_response.request_id)
-                .expect("Invalid UUID!"),
+                .expect("GRPC CONVERT: Invalid UUID!"),
             from: ServerId(append_entries_response.from),
             to: ServerId(append_entries_response.to),
             term: TermIndex(append_entries_response.term),

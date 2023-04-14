@@ -1,9 +1,12 @@
-use std::{sync::mpsc, thread, time::Duration};
+use std::{
+    sync::mpsc::{self, SendError, TryRecvError},
+    thread,
+    time::Duration,
+};
 
 use raft_consensus::{
     rpc_messages::{ReplyTo, Request, RpcMessage},
-    system_clock,
-    transport::RaftTransportBridge,
+    system_clock, RaftTransportBridge, RaftTransportError,
 };
 use tracing::trace;
 
@@ -37,7 +40,7 @@ impl RaftTransportBridge<SimLogCommand> for SimNetworkRaftTransport {
     fn wait_for_next_incoming_message(
         &mut self,
         max_wait: Duration,
-    ) -> Option<RpcMessage<SimLogCommand>> {
+    ) -> Result<Option<RpcMessage<SimLogCommand>>, RaftTransportError> {
         let current_thread = thread::current();
         let current_thread_id = current_thread.id();
         let saved_handle = self.thread_handle.get_or_insert(current_thread);
@@ -50,35 +53,46 @@ impl RaftTransportBridge<SimLogCommand> for SimNetworkRaftTransport {
 
         let started_waiting_at = system_clock::now();
 
-        self.timer_tx
-            .send(ClockAdvance(max_wait))
-            .expect("Could not queue timer advance request to simulator");
+        match self.timer_tx.send(ClockAdvance(max_wait)) {
+            Ok(_) => {}
+            Err(SendError(_)) => {
+                return Err(RaftTransportError::TransportShutdown);
+            }
+        }
 
         loop {
             trace!("Simulated network transport checking for incoming messages...");
-            if let Ok(message) = self.inbound_message_rx.try_recv() {
-                return Some(message);
-            } else {
-                let time_waited = system_clock::now() - started_waiting_at;
-                if time_waited >= max_wait {
-                    return None;
+            match self.inbound_message_rx.try_recv() {
+                Ok(message) => return Ok(Some(message)),
+                Err(TryRecvError::Empty) => {
+                    let time_waited = system_clock::now() - started_waiting_at;
+                    if time_waited >= max_wait {
+                        return Ok(None);
+                    }
+                    thread::park();
                 }
-                // info!("PARKING THREAD: {:?}", current_thread_id);
-                thread::park();
+                Err(TryRecvError::Disconnected) => {
+                    return Err(RaftTransportError::TransportShutdown);
+                }
             }
         }
     }
 
-    fn enqueue_outgoing_request(&mut self, request: Request<SimLogCommand>) {
-        self.outbound_message_tx
-            .send(RpcMessage::Request(request))
-            .expect("Could not queue outbound message to simulated network");
+    fn enqueue_outgoing_request(
+        &mut self,
+        request: Request<SimLogCommand>,
+    ) -> Result<(), RaftTransportError> {
+        match self.outbound_message_tx.send(RpcMessage::Request(request)) {
+            Ok(_) => Ok(()),
+            Err(SendError(_)) => Err(RaftTransportError::TransportShutdown),
+        }
     }
 
-    fn enqueue_reply(&mut self, reply: ReplyTo) {
-        self.outbound_message_tx
-            .send(RpcMessage::Reply(reply))
-            .expect("Could not queue outbound message to simulated network");
+    fn enqueue_reply(&mut self, reply: ReplyTo) -> Result<(), RaftTransportError> {
+        match self.outbound_message_tx.send(RpcMessage::Reply(reply)) {
+            Ok(_) => Ok(()),
+            Err(SendError(_)) => Err(RaftTransportError::TransportShutdown),
+        }
     }
 }
 
@@ -91,8 +105,7 @@ mod tests {
 
     use raft_consensus::{
         rpc_messages::{ReplyTo, RpcMessage, Vote},
-        transport::RaftTransportBridge,
-        ServerId, TermIndex,
+        RaftTransportBridge, ServerId, TermIndex,
     };
 
     #[test]
@@ -110,9 +123,10 @@ mod tests {
         let mut transport = super::SimNetworkRaftTransport::new(outbound_tx, inbound_rx, timer_tx);
 
         let thread_handle = std::thread::spawn(move || {
-            transport
-                .wait_for_next_incoming_message(Duration::from_millis(127))
-                .unwrap()
+            match transport.wait_for_next_incoming_message(Duration::from_millis(127)) {
+                Ok(Some(message)) => message,
+                _ => panic!("Should have received a message"),
+            }
         });
 
         let reply = ReplyTo::RequestVote(Vote {
@@ -129,7 +143,7 @@ mod tests {
 
         inbound_tx.send(message).unwrap();
 
-        let received_message = thread_handle.join().unwrap();
+        let received_message = thread_handle.join().expect("SIM: Thread should not panic");
 
         assert_eq!(expected_message, received_message);
     }
@@ -144,7 +158,11 @@ mod tests {
 
         let thread_handle = std::thread::spawn(move || {
             let message = transport.wait_for_next_incoming_message(Duration::from_millis(127));
-            message.is_none()
+            if let Ok(Some(_)) = message {
+                panic!("Should not have received a message")
+            } else {
+                true
+            }
         });
 
         // Wait for the thread to park itself (TODO - is there a better way to do this?)

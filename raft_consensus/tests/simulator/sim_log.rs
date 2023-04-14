@@ -68,7 +68,7 @@ impl SimLog {
     }
     pub(crate) fn push(&mut self, event: SimLogEntry) {
         self.append_to_file(&event)
-            .expect("Could not write to log file");
+            .expect("SIM: Could not write to log file");
         self.events.push(event);
     }
     pub(crate) fn iter(&self) -> impl Iterator<Item = &SimLogEntry> {

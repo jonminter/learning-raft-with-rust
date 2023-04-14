@@ -1,22 +1,16 @@
-pub mod common;
-pub mod default_storage;
-pub mod rpc_messages;
-pub mod state_machine;
-pub mod transport;
-
-use crate::common::system_clock;
+pub use crate::common::*;
+pub use crate::default_storage::DefaultPersistentStorage;
 use crate::rpc_messages::RpcMessage;
-pub use common::*;
-pub use default_storage::DefaultPersistentStorage;
+use crate::state_machine::*;
+use crate::system_clock;
 use rand_chacha::ChaCha8Rng;
-use state_machine::*;
 
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 use std::{thread, vec};
 
-use transport::RaftTransportBridge;
+use crate::common::RaftTransportBridge;
 
 use tracing::{info, trace};
 
@@ -90,22 +84,39 @@ pub fn start_raft_in_new_thread<LC: LogCommand>(
                 start_time.elapsed().as_millis(),
             );
 
-            let (mut new_state, mut tick_actions) = state.next(
+            let (mut new_state, mut tick_actions) = match state.next(
                 Event::Tick(system_clock::now()),
                 &mut storage,
                 &config,
                 &mut rng,
-            );
+            ) {
+                Ok((new_state, actions)) => (new_state, actions),
+                Err(_) => {
+                    info!("Persisten storaget error, shutting down raft thread...");
+                    break;
+                }
+            };
+
+            if let Err(_) = maybe_next_message {
+                info!("Transport shutdown, shutting down raft thread...");
+                break;
+            }
 
             let mut actions_after_processing_message =
-                if let Some(incoming_message) = maybe_next_message {
+                if let Ok(Some(incoming_message)) = maybe_next_message {
                     let actions;
-                    (new_state, actions) = new_state.next(
+                    (new_state, actions) = match new_state.next(
                         Event::IncomingRpc(incoming_message),
                         &mut storage,
                         &config,
                         &mut rng,
-                    );
+                    ) {
+                        Ok((new_state, actions)) => (new_state, actions),
+                        Err(_) => {
+                            info!("Persistent storage error, shutting down raft thread...");
+                            break;
+                        }
+                    };
                     actions
                 } else {
                     vec![]
@@ -121,10 +132,16 @@ pub fn start_raft_in_new_thread<LC: LogCommand>(
             {
                 match action {
                     Action::OutgoingRpc(RpcMessage::Request(r)) => {
-                        transport.enqueue_outgoing_request(r);
+                        if let Err(_) = transport.enqueue_outgoing_request(r) {
+                            info!("Transport shutdown, shutting down raft thread...");
+                            break;
+                        }
                     }
                     Action::OutgoingRpc(RpcMessage::Reply(message)) => {
-                        transport.enqueue_reply(message);
+                        if let Err(_) = transport.enqueue_reply(message) {
+                            info!("Transport shutdown, shutting down raft thread...");
+                            break;
+                        }
                     }
                     Action::StartTickTimer(timer_duration) => {
                         trace!("Starting tick timer for duration {:?}", timer_duration);

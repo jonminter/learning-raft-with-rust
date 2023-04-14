@@ -63,7 +63,7 @@ fn raft_node(
     let wal_path = wal_root_loc_cloned.to_str().unwrap();
 
     std::fs::create_dir_all(wal_root_loc).expect(&format!(
-        "Could not create wal log dir for server ID {:?}",
+        "CLUSTER INIT: Could not create wal log dir for server ID {:?}",
         server_id
     ));
 

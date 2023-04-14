@@ -25,20 +25,23 @@
     unused_results
 )]
 mod common;
-mod raft;
+mod default_storage;
+mod raft_thread;
+pub mod rpc_messages;
+mod state_machine;
+pub mod system_clock;
 
+pub use common::LogCommand;
+pub use common::LogEntry;
+pub use common::LogIndex;
+pub use common::PersistentStorage;
+pub use common::RaftConfig;
+pub use common::ServerId;
+pub use common::TermIndex;
 pub use common::*;
-pub use raft::common::LogCommand;
-pub use raft::common::LogEntry;
-pub use raft::common::LogIndex;
-pub use raft::common::PersistentStorage;
-pub use raft::common::RaftConfig;
-pub use raft::common::ServerId;
-pub use raft::common::TermIndex;
-pub use raft::rpc_messages;
-pub use raft::start_raft_in_new_thread;
-pub use raft::transport;
-pub use raft::NoOpRaftEventCollector;
-pub use raft::RaftNodeState;
-pub use raft::RaftStateEvent;
-pub use raft::RaftStateEventCollector;
+pub use raft_thread::start_raft_in_new_thread;
+pub use raft_thread::NoOpRaftEventCollector;
+pub use raft_thread::RaftNodeState;
+pub use raft_thread::RaftStateEvent;
+pub use raft_thread::RaftStateEventCollector;
+pub use rpc_messages::*;

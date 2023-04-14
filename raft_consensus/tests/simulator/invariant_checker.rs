@@ -21,7 +21,7 @@ pub(crate) struct ServerProcessRaftStateEventCollector {
 }
 impl RaftStateEventCollector for ServerProcessRaftStateEventCollector {
     fn push_event(&mut self, event: RaftStateEvent) {
-        self.event_tx.send(event).unwrap();
+        self.event_tx.send(event).unwrap_or_default();
     }
 }
 
@@ -119,7 +119,7 @@ impl InvariantChecker {
                         .or_insert(HashSet::new());
                     nodes_that_think_they_are_leaders
                         .get_mut(&server_state.current_term)
-                        .expect("Should have a set for nodes that think they are leaders this term")
+                        .expect("CLUSTER INVARIANT VIOLATED: Should have a set for nodes that think they are leaders this term")
                         .insert(server_state.server_id);
                 }
                 _ => (),
@@ -131,7 +131,7 @@ impl InvariantChecker {
             server_state.leader_for_term.map(|leader| {
                 nodes_that_other_nodes_see_as_leaders
                     .get_mut(&server_state.current_term)
-                    .expect("Should have a set for this term")
+                    .expect("CLUSTER INVARIANT VIOLATED: Should have a set for this term")
                     .insert(leader);
             });
         }
@@ -141,7 +141,7 @@ impl InvariantChecker {
             .for_each(|(term, leaders)| {
                 assert!(
                     leaders.len() <= 1,
-                    "There should be at most ONE node that believes it is the leader for term {term:?} instead found {count}, leaders are {leaders:?}!",
+                    "CLUSTER INVARIANT VIOLATED: There should be at most ONE node that believes it is the leader for term {term:?} instead found {count}, leaders are {leaders:?}!",
                     term = term,
                     count = leaders.len(),
                     leaders = leaders
@@ -163,7 +163,7 @@ impl InvariantChecker {
 
                 assert!(
                     leaders.len() <= 1,
-                    "There should be at most ONE agreed upon leader for term {term:?} instead found {leaders:?}!",
+                    "CLUSTER INVARIANT VIOLATED: There should be at most ONE agreed upon leader for term {term:?} instead found {leaders:?}!",
                     term = term,
                     leaders = leaders
                 )

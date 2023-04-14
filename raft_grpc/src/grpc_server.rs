@@ -3,6 +3,7 @@ use crate::proto::raft_consensus_server::RaftConsensus;
 use crate::proto::{AppendEntriesRequest, AppendEntriesResponse, VoteRequest, VoteResponse};
 use raft_consensus::rpc_messages;
 use std::thread;
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
 use tonic::{Request, Response, Status};
 
@@ -32,19 +33,19 @@ impl RaftGrpcServerImpl {
     ///
     /// See RaftGrpcTransportBridge::wait_for_next_incoming_message() to see the
     /// implementation of the inverse side, the Raft thread, where it parks the thread while waiting.
-    pub fn send_incoming_request_to_transport(
+    fn send_incoming_request_to_transport(
         &self,
         reply_tx: oneshot::Sender<rpc_messages::ReplyTo>,
         incoming_request: rpc_messages::Request<u64>,
-    ) {
+    ) -> Result<(), SendError<TransportInput>> {
         self.raft_input_tx
-            .send(TransportInput::Request(reply_tx, incoming_request))
-            .expect("Failed to send incoming request to gRPC transport!");
+            .send(TransportInput::Request(reply_tx, incoming_request))?;
         self.maybe_transport_thread_handle
             .as_ref()
-            .expect("Transport thread not registered!")
+            .expect("GRPC BUG ALERT: Transport thread not registered!")
             .thread()
             .unpark();
+        Ok(())
     }
 }
 
@@ -57,16 +58,18 @@ impl RaftConsensus for RaftGrpcServerImpl {
         let vote_req = request.into_inner();
 
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.send_incoming_request_to_transport(
+        if let Err(_) = self.send_incoming_request_to_transport(
             reply_tx,
             rpc_messages::Request::RequestVote(vote_req.into()),
-        );
+        ) {
+            return Err(Status::internal("Raft state machine shutdown!"));
+        }
 
         let vote_response = reply_rx.await;
 
         match vote_response {
             Ok(rpc_messages::ReplyTo::RequestVote(vote)) => Ok(Response::new(vote.into())),
-            Err(_) => Err(Status::cancelled("Raft state machine shutdown!")),
+            Err(_) => Err(Status::internal("Raft state machine shutdown!")),
             _ => unreachable!("BUG ALERT: Unexpected response type, expected SendVote!"),
         }
     }
@@ -78,10 +81,12 @@ impl RaftConsensus for RaftGrpcServerImpl {
         let append_entries_req = request.into_inner();
 
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.send_incoming_request_to_transport(
+        if let Err(_) = self.send_incoming_request_to_transport(
             reply_tx,
             rpc_messages::Request::AppendEntries(append_entries_req.into()),
-        );
+        ) {
+            return Err(Status::internal("Raft state machine shutdown!"));
+        }
 
         let append_entries_response = reply_rx.await;
 
@@ -89,7 +94,7 @@ impl RaftConsensus for RaftGrpcServerImpl {
             Ok(rpc_messages::ReplyTo::AppendEntries(append_entries)) => {
                 Ok(Response::new(append_entries.into()))
             }
-            Err(_) => Err(Status::cancelled("Raft state machine shutdown!")),
+            Err(_) => Err(Status::internal("Raft state machine shutdown!")),
             _ => unreachable!("BUG ALERT: Unexpected response type, expected AppendEntries!"),
         }
     }

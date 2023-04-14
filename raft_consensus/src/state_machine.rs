@@ -5,8 +5,8 @@ use self::state_defs::*;
 /// Currently, only implements the leader election part of the protocol
 use super::common::*;
 use super::rpc_messages::*;
-use crate::common::system_clock;
-use crate::common::Instant;
+use crate::system_clock;
+use crate::system_clock::Instant;
 use divrem::DivCeil;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
@@ -113,20 +113,20 @@ impl Node {
         storage: &mut PS,
         config: &RaftConfig,
         rng: &mut ChaCha8Rng,
-    ) -> (Self, Vec<Action<C>>) {
+    ) -> Result<(Self, Vec<Action<C>>), PersistentStorageError> {
         self.update_clock();
 
         let (new_node, mut maybe_tick_timer) =
             self.if_rpc_message_has_higher_term_become_follower(storage, &event, config, rng);
 
         let (new_node, mut actions) = match new_node {
-            Self::Leader(state) => state.handle_event(event, storage, config, rng),
-            Self::Follower(state) => state.handle_event(event, storage, config, rng),
-            Self::Candidate(state) => state.handle_event(event, storage, config, rng),
+            Self::Leader(state) => state.handle_event(event, storage, config, rng)?,
+            Self::Follower(state) => state.handle_event(event, storage, config, rng)?,
+            Self::Candidate(state) => state.handle_event(event, storage, config, rng)?,
         };
 
         actions.append(&mut maybe_tick_timer);
-        (new_node, actions)
+        Ok((new_node, actions))
     }
 }
 impl From<NodeState<Leader>> for Node {
@@ -163,7 +163,7 @@ trait Transitions {
         storage: &mut PS,
         config: &RaftConfig,
         rng: &mut ChaCha8Rng,
-    ) -> (Node, Vec<Action<C>>)
+    ) -> Result<(Node, Vec<Action<C>>), PersistentStorageError>
     where
         C: LogCommand,
         PS: PersistentStorage<C>;
@@ -202,10 +202,10 @@ macro_rules! has_election_timer {
 }
 
 mod state_defs {
-    use crate::common::system_clock;
-    use crate::common::system_clock::Instant;
-    use crate::raft::common::LogIndex;
-    use crate::raft::common::ServerId;
+    use crate::common::LogIndex;
+    use crate::common::ServerId;
+    use crate::system_clock;
+    use crate::system_clock::Instant;
 
     use std::collections::HashMap;
     use std::collections::HashSet;
@@ -391,7 +391,7 @@ impl Transitions for NodeState<Leader> {
         storage: &mut PS,
         config: &RaftConfig,
         _: &mut ChaCha8Rng,
-    ) -> (Node, Vec<Action<C>>)
+    ) -> Result<(Node, Vec<Action<C>>), PersistentStorageError>
     where
         C: LogCommand,
         PS: PersistentStorage<C>,
@@ -405,7 +405,7 @@ impl Transitions for NodeState<Leader> {
                         vec![]
                     };
 
-                (self.into(), maybe_heartbeat)
+                Ok((self.into(), maybe_heartbeat))
             }
 
             Event::LogEntryAppliedByApplication(_) => todo!(),
@@ -413,7 +413,7 @@ impl Transitions for NodeState<Leader> {
             Event::IncomingRpc(RpcMessage::Request(rpc_req)) => match rpc_req {
                 Request::RequestVote(req) => {
                     let vote = self.vote_no(storage, req, "I am the leader");
-                    (self.into(), vote)
+                    Ok((self.into(), vote))
                 }
 
                 Request::AppendEntries(req) => {
@@ -421,7 +421,7 @@ impl Transitions for NodeState<Leader> {
                         unreachable!("BUG: Leader should not receive append entries from another leader with same term")
                     } else if req.term < storage.current_term() {
                         let ack = self.ack_append_entries(storage, req, false);
-                        (self.into(), ack)
+                        Ok((self.into(), ack))
                     } else {
                         unreachable!("BUG: If leader receives an append entries from a higher term, it should have become a follower")
                     }
@@ -431,10 +431,10 @@ impl Transitions for NodeState<Leader> {
                 ReplyTo::AppendEntries(_) => {
                     // TODO: When we receive an append entries ack, we should update the next index and match index for the node that sent the ack
                     // TODO: We should also resend append entries if the follower is behind in the log
-                    (self.into(), vec![])
+                    Ok((self.into(), vec![]))
                 }
 
-                ReplyTo::RequestVote(_) => (self.into(), vec![]),
+                ReplyTo::RequestVote(_) => Ok((self.into(), vec![])),
             },
         }
     }
@@ -447,7 +447,7 @@ impl NodeState<Candidate> {
         config: &RaftConfig,
         storage: &mut PS,
         rng: &mut ChaCha8Rng,
-    ) -> Vec<Action<C>>
+    ) -> Result<Vec<Action<C>>, PersistentStorageError>
     where
         PS: PersistentStorage<C>,
         C: LogCommand,
@@ -459,7 +459,7 @@ impl NodeState<Candidate> {
         storage
             .update_term(storage.current_term().increment())
             .record_vote(self.server_id)
-            .sync();
+            .sync()?;
 
         let election_timeout = self.reset_election_timer(config, rng);
         self.inner.votes_received = HashSet::new();
@@ -480,7 +480,7 @@ impl NodeState<Candidate> {
                 },
             )));
         }
-        start_tick_timer_and_request_votes
+        Ok(start_tick_timer_and_request_votes)
     }
 }
 
@@ -491,7 +491,7 @@ impl Transitions for NodeState<Candidate> {
         storage: &mut PS,
         config: &RaftConfig,
         rng: &mut ChaCha8Rng,
-    ) -> (Node, Vec<Action<C>>)
+    ) -> Result<(Node, Vec<Action<C>>), PersistentStorageError>
     where
         C: LogCommand,
         PS: PersistentStorage<C>,
@@ -506,12 +506,12 @@ impl Transitions for NodeState<Candidate> {
                         server_id = self.server_id,
                         timeout=self.inner.election_timeout.as_millis()
                     );
-                    self.start_new_election(config, storage, rng)
+                    self.start_new_election(config, storage, rng)?
                 } else {
                     vec![]
                 };
 
-                (self.into(), maybe_vote_requests)
+                Ok((self.into(), maybe_vote_requests))
             }
 
             Event::LogEntryAppliedByApplication(_) => todo!(),
@@ -519,13 +519,13 @@ impl Transitions for NodeState<Candidate> {
             Event::IncomingRpc(RpcMessage::Request(rpc_req)) => match rpc_req {
                 Request::RequestVote(req) => {
                     let vote = self.vote_no(storage, req, "I am a candidate");
-                    (self.into(), vote)
+                    Ok((self.into(), vote))
                 }
 
                 Request::AppendEntries(req) => {
                     if req.term <= storage.current_term() {
                         let ack = self.ack_append_entries(storage, req, false);
-                        (self.into(), ack)
+                        Ok((self.into(), ack))
                     } else {
                         unreachable!("BUG: If candidate receives an append entries from a higher term, it should have become a follower already")
                     }
@@ -549,7 +549,7 @@ impl Transitions for NodeState<Candidate> {
                             let mut new_state: NodeState<Leader> = self.transition_to();
                             let actions =
                                 new_state.send_leader_heartbeat_to_cluster(storage, config);
-                            (new_state.into(), actions)
+                            Ok((new_state.into(), actions))
                         } else {
                             self.inner.votes_received.insert(vote.from);
                             info!(
@@ -559,14 +559,14 @@ impl Transitions for NodeState<Candidate> {
                                 votes_needed=qorum - self.inner.votes_received.len(),
                                 term=storage.current_term()
                             );
-                            (self.into(), vec![])
+                            Ok((self.into(), vec![]))
                         }
                     } else {
-                        (self.into(), vec![])
+                        Ok((self.into(), vec![]))
                     }
                 }
 
-                ReplyTo::AppendEntries(_) => (self.into(), vec![]),
+                ReplyTo::AppendEntries(_) => Ok((self.into(), vec![])),
             },
         }
     }
@@ -597,7 +597,11 @@ impl NodeState<Follower> {
         (node_state, FirstTickTimer(election_timeout))
     }
 
-    fn vote_in_election<C, PS>(&mut self, storage: &mut PS, vote_req: RequestVote) -> Vec<Action<C>>
+    fn vote_in_election<C, PS>(
+        &mut self,
+        storage: &mut PS,
+        vote_req: RequestVote,
+    ) -> Result<Vec<Action<C>>, PersistentStorageError>
     where
         C: LogCommand,
         PS: PersistentStorage<C>,
@@ -627,16 +631,16 @@ impl NodeState<Follower> {
                 candidate_id = vote_req.from,
                 term = vote_req.term
             );
-            storage.record_vote(vote_req.from).sync();
+            storage.record_vote(vote_req.from).sync()?;
         }
 
-        vec![Action::OutgoingRpc(RpcMessage::vote(Vote {
+        Ok(vec![Action::OutgoingRpc(RpcMessage::vote(Vote {
             request_id: vote_req.request_id,
             from: self.server_id,
             to: vote_req.from,
             term: storage.current_term(),
             vote_granted,
-        }))]
+        }))])
     }
 }
 
@@ -647,7 +651,7 @@ impl Transitions for NodeState<Follower> {
         storage: &mut PS,
         config: &RaftConfig,
         rng: &mut ChaCha8Rng,
-    ) -> (Node, Vec<Action<C>>)
+    ) -> Result<(Node, Vec<Action<C>>), PersistentStorageError>
     where
         C: LogCommand,
         PS: PersistentStorage<C>,
@@ -661,10 +665,10 @@ impl Transitions for NodeState<Follower> {
                         timeout=self.inner.election_timeout.as_millis(),
                     );
                     let mut new_state: NodeState<Candidate> = self.transition_to();
-                    let vote_requests = new_state.start_new_election(config, storage, rng);
-                    (new_state.into(), vote_requests)
+                    let vote_requests = new_state.start_new_election(config, storage, rng)?;
+                    Ok((new_state.into(), vote_requests))
                 } else {
-                    (self.into(), vec![])
+                    Ok((self.into(), vec![]))
                 }
             }
 
@@ -677,9 +681,9 @@ impl Transitions for NodeState<Follower> {
                         vote = self.vote_no(storage, req, "term is less than current term");
                     } else {
                         self.inner.leader_id = None;
-                        vote = self.vote_in_election(storage, req);
+                        vote = self.vote_in_election(storage, req)?;
                     }
-                    (self.into(), vote)
+                    Ok((self.into(), vote))
                 }
 
                 Request::AppendEntries(req) => {
@@ -695,12 +699,12 @@ impl Transitions for NodeState<Follower> {
                     let mut maybe_start_timer_and_ack =
                         self.ack_append_entries(storage, req, ack_success);
                     maybe_start_timer_and_ack.append(&mut maybe_start_timer);
-                    (self.into(), maybe_start_timer_and_ack)
+                    Ok((self.into(), maybe_start_timer_and_ack))
                 }
             },
 
             // Followers don't send out RPCs so ignore replies, this can only happen for rpc responses delivered late
-            Event::IncomingRpc(RpcMessage::Reply(_)) => (self.into(), vec![]),
+            Event::IncomingRpc(RpcMessage::Reply(_)) => Ok((self.into(), vec![])),
         }
     }
 }

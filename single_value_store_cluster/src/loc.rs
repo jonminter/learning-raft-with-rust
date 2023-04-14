@@ -43,7 +43,8 @@ impl Loc {
     const ROOT_MARKER: &'static str = "Cargo.lock";
 
     fn find_root() -> Self {
-        let cwd = std::env::current_dir().expect("Failed to get current directory of the process");
+        let cwd = std::env::current_dir()
+            .expect("CLUSTER INIT: Failed to get current directory of the process");
         Self(Self::traverse(cwd))
     }
 
@@ -53,7 +54,7 @@ impl Loc {
         } else {
             Self::traverse(
                 dir.parent()
-                    .expect("Failed to get parent directory during root search")
+                    .expect("CLUSTER INIT: Failed to get parent directory during root search")
                     .to_path_buf(),
             )
         }

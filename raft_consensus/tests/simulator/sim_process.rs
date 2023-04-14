@@ -2,7 +2,6 @@ use std::{collections::HashSet, thread::JoinHandle};
 
 use raft_consensus::{start_raft_in_new_thread, RaftConfig, RaftStateEventCollector, ServerId};
 use rand_chacha::ChaCha8Rng;
-use tracing::info;
 
 use super::sim_transport::SimNetworkRaftTransport;
 

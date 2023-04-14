@@ -101,9 +101,9 @@ impl SimNetwork {
                 );
                 ((from, to), NetworkConnectionQuality {
                     packet_loss: Bernoulli::new(drop_probability.0)
-                        .expect("Could not create Bernoulli distribution for packet loss"),
+                        .expect("SIM: Could not create Bernoulli distribution for packet loss"),
                     latency: LogNormal::new(mean_latency.0.ln(), std_dev.0)
-                        .expect("Could not create LogNormal distribution for latency")
+                        .expect("SIM: Could not create LogNormal distribution for latency")
                 })
             }).collect();
 
@@ -168,18 +168,20 @@ impl SimNetwork {
             .get_mut(&server_id)
             .expect(
                 format!(
-                    "Server with ID {server_id:?} not found",
+                    "SIM: Server with ID {server_id:?} not found",
                     server_id = server_id
                 )
                 .as_str(),
             )
             .maybe_unclaimed_transport
             .take()
-            .expect("Transport already claimed")
+            .expect("SIM: Transport already claimed")
     }
 
     pub(crate) fn take_timer_rx(&mut self) -> mpsc::Receiver<ClockAdvance> {
-        self.maybe_timer_rx.take().expect("Timer already taken!")
+        self.maybe_timer_rx
+            .take()
+            .expect("SIM: Timer already taken!")
     }
 
     /// Used by tests to partition the network into multiple partitions, where each partition is a disjoin set of server IDs
@@ -241,7 +243,7 @@ impl SimNetwork {
             to = to,
         );
         let connection = self.connections.get_mut(&(from, to)).expect(&format!(
-            "Should have a connection between server {from:?} and server {to:?}",
+            "SIM: Should have a connection between server {from:?} and server {to:?}",
             from = from,
             to = to
         ));
@@ -258,18 +260,18 @@ impl SimNetwork {
     ) {
         assert!(
             mean_latency.0 >= 0.0,
-            "(from={from:?}, to={to:?}): Latency should be greater than or equal to 0",
+            "SIM: (from={from:?}, to={to:?}): Latency should be greater than or equal to 0",
             from = from,
             to = to,
         );
         assert!(
             latency_std_dev.0 >= 0.0,
-            "(from={from:?}, to={to:?}): Standard deviation should be greater than or equal to 0",
+            "SIM: (from={from:?}, to={to:?}): Standard deviation should be greater than or equal to 0",
             from = from,
             to = to,
         );
         let connection = self.connections.get_mut(&(from, to)).expect(&format!(
-            "Should have a connection between server {from:?} and server {to:?}",
+            "SIM: Should have a connection between server {from:?} and server {to:?}",
             from = from,
             to = to
         ));
@@ -299,7 +301,7 @@ impl SimNetwork {
             .latency
             .sample(rng)
             .to_u64()
-            .expect("Could not convert latency to u64");
+            .expect("SIM: Could not convert latency to u64");
         let message_time = time + Duration::from_millis(message_latency);
         if drop_message {
             trace!(
@@ -352,7 +354,7 @@ impl SimNetwork {
         network_node
             .incoming_message_tx
             .send(message)
-            .expect("Could not send network message to server");
+            .expect("SIM: Could not send network message to server");
     }
 }
 
@@ -361,8 +363,8 @@ mod tests {
 
     use raft_consensus::rpc_messages::RpcMessage;
     use raft_consensus::{
-        rpc_messages::Request, rpc_messages::RequestVote, transport::RaftTransportBridge, LogIndex,
-        ServerId, TermIndex,
+        rpc_messages::Request, rpc_messages::RequestVote, LogIndex, RaftTransportBridge,
+        RaftTransportError, ServerId, TermIndex,
     };
     use rand::RngCore;
     use rand::SeedableRng;
@@ -409,7 +411,9 @@ mod tests {
         });
         let expected_message = outgoing_message.clone();
 
-        originating_server_transport.enqueue_outgoing_request(outgoing_message);
+        if let Err(_) = originating_server_transport.enqueue_outgoing_request(outgoing_message) {
+            panic!("Could not enqueue outgoing request! (transport shutdown)");
+        }
 
         let messages = network.get_all_queued_outbound_messages(&mut rng);
         assert_eq!(messages.len(), 1);
@@ -445,7 +449,9 @@ mod tests {
             last_log_term: TermIndex(0),
         });
 
-        originating_server_transport.enqueue_outgoing_request(outgoing_message);
+        if let Err(_) = originating_server_transport.enqueue_outgoing_request(outgoing_message) {
+            panic!("Could not enqueue outgoing request! (transport shutdown)");
+        }
 
         let messages = network.get_all_queued_outbound_messages(&mut rng);
         assert_eq!(messages.len(), 0);
@@ -473,9 +479,11 @@ mod tests {
         let expected_message = incoming_message.clone();
 
         let dest_server_thread = std::thread::spawn(move || {
-            dest_server_transport
-                .wait_for_next_incoming_message(Duration::from_secs(1))
-                .unwrap()
+            match dest_server_transport.wait_for_next_incoming_message(Duration::from_secs(1)) {
+                Ok(Some(message)) => message,
+                Ok(None) => panic!("Max wait reached"),
+                Err(RaftTransportError::TransportShutdown) => panic!("Transport shutdown"),
+            }
         });
 
         network.deliver_message(ServerId(0), RpcMessage::Request(incoming_message));
