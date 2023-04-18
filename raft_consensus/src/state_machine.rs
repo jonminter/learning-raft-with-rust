@@ -328,7 +328,7 @@ impl<St: State> NodeState<St> {
         C: LogCommand,
         PS: PersistentStorage<C>,
     {
-        info!(
+        debug!(
             "{server_id:?}: Vote NO for candidate {candidate_id:?} because {reason:?} (my term: {my_term:?}, vote term: {candidate_term:?})",
             server_id = self.server_id,
             candidate_id = vote_req.from,

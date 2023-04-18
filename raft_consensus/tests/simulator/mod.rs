@@ -160,13 +160,6 @@ impl ClusterSim {
         // Find the first transport wakeup request that is before the next event to process (if there is one)
         let transport_wake_up_requests: HashSet<WakeUpAtOrBefore> =
             self.transport_wake_up_rx.try_iter().collect();
-        if transport_wake_up_requests.len() > 0 {
-            debug!(
-                "Time = {sim_time:?}: Queued transport wake up requests: {wakeup_requests:?}",
-                wakeup_requests = transport_wake_up_requests,
-                sim_time = SimTime::now()
-            );
-        }
         for wake_up_by in transport_wake_up_requests {
             self.transport_wakeup_requests
                 .insert(if wake_up_by.0 >= SimTime::now() {
@@ -174,14 +167,6 @@ impl ClusterSim {
                 } else {
                     SimTime::now()
                 });
-        }
-
-        if self.transport_wakeup_requests.len() > 0 {
-            debug!(
-                "Time = {sim_time:?}: All transport wake up requests: {wakeup_requests:?}",
-                wakeup_requests = self.transport_wakeup_requests,
-                sim_time = SimTime::now()
-            );
         }
 
         let maybe_wakeup_time = self
@@ -200,19 +185,7 @@ impl ClusterSim {
                 )
                 .as_str(),
             );
-            if !advance_by.is_zero() {
-                debug!(
-                    "Time = {sim_time:?}: Advancing time by {advance_by:?}ms to {wake_up_time:?}",
-                    advance_by = advance_by.as_millis(),
-                    wake_up_time = wakeup_time,
-                    sim_time = SimTime::now()
-                );
-            }
             MockClock::advance(advance_by);
-            debug!(
-                "Waking up transport connectors at time {wake_up_time:?}",
-                wake_up_time = wakeup_time
-            );
             for (_, server_process) in self.servers.iter_mut() {
                 server_process.wake_up_transport_connector();
             }
@@ -224,7 +197,6 @@ impl ClusterSim {
 
             let advance_duration = next.time.checked_sub(&SimTime::now());
             if let Some(advance_duration) = advance_duration {
-                debug!("Advancing time by {:?}ms", advance_duration.as_millis());
                 MockClock::advance(advance_duration);
             }
 
