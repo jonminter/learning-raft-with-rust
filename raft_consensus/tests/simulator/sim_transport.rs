@@ -6,37 +6,39 @@ use std::{
 
 use raft_consensus::{
     rpc_messages::{ReplyTo, Request, RpcMessage},
-    system_clock, RaftTransportBridge, RaftTransportError,
+    system_clock, RaftTransportConnector, RaftTransportError,
 };
 use tracing::{debug, trace};
 
-use super::common::{ClockAdvance, SimLogCommand};
+use crate::simulator::common::SimTime;
+
+use super::common::{SimLogCommand, WakeUpAtOrBefore};
 
 /// Transport used by raft nodes in the simulator. Allows the simulated network to send/receive messages from the raft nodes.
 /// Parks the Raft node's thread when it is waiting for the next message, and unparks it when the simulator clock is updated
 /// so that it can check if the wait timeout has been reached.
-pub(crate) struct SimNetworkRaftTransport {
+pub(crate) struct SimNetworkRaftTransportConnector {
     outbound_message_tx: mpsc::Sender<RpcMessage<SimLogCommand>>,
     inbound_message_rx: mpsc::Receiver<RpcMessage<SimLogCommand>>,
-    timer_tx: mpsc::Sender<ClockAdvance>,
+    wake_up_tx: mpsc::Sender<WakeUpAtOrBefore>,
     thread_handle: Option<thread::Thread>,
 }
-impl SimNetworkRaftTransport {
+impl SimNetworkRaftTransportConnector {
     pub(crate) fn new(
         outbound_message_tx: mpsc::Sender<RpcMessage<SimLogCommand>>,
         inbound_message_rx: mpsc::Receiver<RpcMessage<SimLogCommand>>,
-        timer_tx: mpsc::Sender<ClockAdvance>,
+        timer_tx: mpsc::Sender<WakeUpAtOrBefore>,
     ) -> Self {
         Self {
             outbound_message_tx,
             inbound_message_rx,
-            timer_tx,
+            wake_up_tx: timer_tx,
             thread_handle: None,
         }
     }
 }
 
-impl RaftTransportBridge<SimLogCommand> for SimNetworkRaftTransport {
+impl RaftTransportConnector<SimLogCommand> for SimNetworkRaftTransportConnector {
     fn wait_for_next_incoming_message(
         &mut self,
         max_wait: Duration,
@@ -53,7 +55,10 @@ impl RaftTransportBridge<SimLogCommand> for SimNetworkRaftTransport {
 
         let started_waiting_at = system_clock::now();
 
-        match self.timer_tx.send(ClockAdvance(max_wait)) {
+        match self
+            .wake_up_tx
+            .send(WakeUpAtOrBefore(SimTime::now() + max_wait))
+        {
             Ok(_) => {}
             Err(SendError(_)) => {
                 return Err(RaftTransportError::TransportShutdown);
@@ -106,13 +111,13 @@ mod tests {
 
     use raft_consensus::{
         rpc_messages::{ReplyTo, RpcMessage, Vote},
-        RaftTransportBridge, ServerId, TermIndex,
+        RaftTransportConnector, ServerId, TermIndex,
     };
 
     #[test]
     fn sim_transport_should_be_send() {
         fn assert_send<T: Send>() {}
-        assert_send::<super::SimNetworkRaftTransport>();
+        assert_send::<super::SimNetworkRaftTransportConnector>();
     }
 
     #[test]
@@ -121,7 +126,8 @@ mod tests {
         let (inbound_tx, inbound_rx) = std::sync::mpsc::channel();
         let (timer_tx, _timer_rx) = std::sync::mpsc::channel();
 
-        let mut transport = super::SimNetworkRaftTransport::new(outbound_tx, inbound_rx, timer_tx);
+        let mut transport =
+            super::SimNetworkRaftTransportConnector::new(outbound_tx, inbound_rx, timer_tx);
 
         let thread_handle = std::thread::spawn(move || {
             match transport.wait_for_next_incoming_message(Duration::from_millis(127)) {
@@ -155,7 +161,8 @@ mod tests {
         let (_inbound_tx, inbound_rx) = std::sync::mpsc::channel();
         let (timer_tx, _timer_rx) = std::sync::mpsc::channel();
 
-        let mut transport = super::SimNetworkRaftTransport::new(outbound_tx, inbound_rx, timer_tx);
+        let mut transport =
+            super::SimNetworkRaftTransportConnector::new(outbound_tx, inbound_rx, timer_tx);
 
         let thread_handle = std::thread::spawn(move || {
             let message = transport.wait_for_next_incoming_message(Duration::from_millis(127));

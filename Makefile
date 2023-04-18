@@ -1,7 +1,7 @@
 test-loop:
-	while RUST_LOG=debug cargo test --features mock_time $(TEST_TO_RUN) -- --nocapture;do :;done
+	while RUST_LOG=$(RUST_LOG) RUST_BACKTRACE=$(RUST_BACKTRACE) cargo test --features mock_time $(TEST_TO_RUN) -- --nocapture;do :;done
 test:
-	RUST_LOG=debug cargo test --features mock_time $(TEST_TO_RUN) -- --nocapture
+	RUST_LOG=$(RUST_LOG) RUST_BACKTRACE=$(RUST_BACKTRACE) cargo test --features mock_time $(TEST_TO_RUN) -- --nocapture
 run-cluster:
 	cargo run --bin single_value_store_cluster
 client-get:

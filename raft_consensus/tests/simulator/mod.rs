@@ -7,10 +7,13 @@ pub(crate) mod sim_transport;
 
 use mock_instant::MockClock;
 use raft_consensus::{RaftConfig, ServerId};
+use tracing::{debug, warn};
 use tracing::{info, trace};
 
 use invariant_checker::InvariantChecker;
 
+use std::cmp::Reverse;
+use std::collections::BTreeSet;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -23,9 +26,9 @@ use rand_chacha::ChaCha8Rng;
 use crate::simulator::common::SimulatorAction;
 use crate::simulator::sim_log::SimLogEntry;
 
-use self::common::ClockAdvance;
 use self::common::SimTime;
 use self::common::SimulatorEvent;
+use self::common::WakeUpAtOrBefore;
 use self::sim_log::SimLog;
 use self::sim_network::SimNetwork;
 use self::sim_process::SimRaftProcess;
@@ -38,13 +41,12 @@ pub(crate) struct ClusterSim {
     rng: ChaCha8Rng,
     servers: HashMap<ServerId, SimRaftProcess>,
     network: SimNetwork,
-    tick_requests: mpsc::Receiver<ClockAdvance>,
-    events_to_process: BinaryHeap<SimulatorEvent>,
+    transport_wake_up_rx: mpsc::Receiver<WakeUpAtOrBefore>,
+    events_to_process: BinaryHeap<Reverse<SimulatorEvent>>,
     invariant_checker: InvariantChecker,
     pub(crate) results: SimResults,
     pub(crate) log: SimLog,
-    current_time: SimTime,
-    last_queued_tick_request: Option<SimTime>,
+    transport_wakeup_requests: BTreeSet<SimTime>,
 }
 
 pub(crate) struct SimResults {
@@ -94,7 +96,7 @@ impl ClusterSim {
                 config.clone(),
                 storage_temp_dir.clone(),
                 rng.clone(),
-                network.take_transport_for(sid),
+                network.take_transport_connector_for(sid),
                 invariant_checker.event_collector_for_server(),
             );
             servers.insert(sid, process);
@@ -107,15 +109,14 @@ impl ClusterSim {
             network,
             events_to_process: messages,
             rng,
-            tick_requests: timer_rx,
+            transport_wake_up_rx: timer_rx,
             results: SimResults {
                 was_leader_elected: false,
                 all_elected_leaders: HashSet::new(),
             },
             log,
             invariant_checker,
-            current_time: SimTime(MockClock::time()),
-            last_queued_tick_request: None,
+            transport_wakeup_requests: BTreeSet::new(),
         }
     }
 
@@ -127,9 +128,16 @@ impl ClusterSim {
 
     /// Provides a way for tests to inject messages into the simulation.
     pub(crate) fn enqueue_event(&mut self, msg: SimulatorEvent) {
+        assert!(
+            msg.time >= SimTime::now(),
+            "Cannot enqueue an event in the past {msg:?} (sim time = {sim_time:?}!",
+            msg = msg,
+            sim_time = SimTime::now()
+        );
+
         self.log
-            .push(SimLogEntry::event_queued(self.current_time, &msg));
-        self.events_to_process.push(msg);
+            .push(SimLogEntry::event_queued(SimTime::now(), &msg));
+        self.events_to_process.push(Reverse(msg));
     }
 
     /// Runs a single step of the simulation, this doess...
@@ -138,24 +146,9 @@ impl ClusterSim {
     /// 3. Get the next simulator message to be processed and run the appropriate action (i.e. deliver a message to a server, partion the network, etc.)
     /// 4. Checks that no Raft invariants have been violated in the cluster
     fn run_step(&mut self) {
-        self.current_time = SimTime(MockClock::time());
-
-        let tick_requests: Vec<ClockAdvance> = self.tick_requests.try_iter().collect();
-        for advance_clock_by in tick_requests {
-            let tick_at = self.current_time + advance_clock_by;
-
-            if self.last_queued_tick_request.is_none()
-                || self.last_queued_tick_request.unwrap() < tick_at
-            {
-                self.enqueue_event(SimulatorEvent {
-                    time: tick_at,
-                    action: SimulatorAction::TickClock,
-                });
-                self.last_queued_tick_request = Some(self.current_time);
-            }
-        }
-
-        let outbound_messages = self.network.get_all_queued_outbound_messages(&mut self.rng);
+        let outbound_messages = self
+            .network
+            .get_all_queued_outbound_messages(&mut self.rng, &mut self.log);
         for (message, delivery_time) in outbound_messages {
             self.enqueue_event(SimulatorEvent {
                 time: delivery_time,
@@ -163,16 +156,77 @@ impl ClusterSim {
             });
         }
 
-        if !self.events_to_process.is_empty() {
-            let next = self.events_to_process.pop().unwrap();
-            self.log
-                .push(SimLogEntry::event_processed(self.current_time, &next));
+        let maybe_next = self.events_to_process.peek();
+        // Find the first transport wakeup request that is before the next event to process (if there is one)
+        let transport_wake_up_requests: HashSet<WakeUpAtOrBefore> =
+            self.transport_wake_up_rx.try_iter().collect();
+        if transport_wake_up_requests.len() > 0 {
+            debug!(
+                "Time = {sim_time:?}: Queued transport wake up requests: {wakeup_requests:?}",
+                wakeup_requests = transport_wake_up_requests,
+                sim_time = SimTime::now()
+            );
+        }
+        for wake_up_by in transport_wake_up_requests {
+            self.transport_wakeup_requests
+                .insert(if wake_up_by.0 >= SimTime::now() {
+                    wake_up_by.0
+                } else {
+                    SimTime::now()
+                });
+        }
 
-            let advance_duration = next.time.checked_sub(&self.current_time);
-            if let Some(advance_duration) = advance_duration {
-                MockClock::advance(advance_duration.into());
+        if self.transport_wakeup_requests.len() > 0 {
+            debug!(
+                "Time = {sim_time:?}: All transport wake up requests: {wakeup_requests:?}",
+                wakeup_requests = self.transport_wakeup_requests,
+                sim_time = SimTime::now()
+            );
+        }
+
+        let maybe_wakeup_time = self
+            .transport_wakeup_requests
+            .iter()
+            .filter(|wake_up| maybe_next.is_none() || wake_up <= &&maybe_next.unwrap().0.time)
+            .next()
+            .cloned();
+
+        if let Some(wakeup_time) = maybe_wakeup_time {
+            let advance_by = wakeup_time.checked_sub(&SimTime::now()).expect(
+                format!(
+                    "Time should not go backwards, wake up time {wakeup_time:?} is in the past (sim time = {sim_time:?}!",
+                    wakeup_time = wakeup_time,
+                    sim_time=SimTime::now()
+                )
+                .as_str(),
+            );
+            if !advance_by.is_zero() {
+                debug!(
+                    "Time = {sim_time:?}: Advancing time by {advance_by:?}ms to {wake_up_time:?}",
+                    advance_by = advance_by.as_millis(),
+                    wake_up_time = wakeup_time,
+                    sim_time = SimTime::now()
+                );
             }
-            self.current_time = MockClock::time().into();
+            MockClock::advance(advance_by);
+            debug!(
+                "Waking up transport connectors at time {wake_up_time:?}",
+                wake_up_time = wakeup_time
+            );
+            for (_, server_process) in self.servers.iter_mut() {
+                server_process.wake_up_transport_connector();
+            }
+            self.transport_wakeup_requests.remove(&wakeup_time);
+        } else if !self.events_to_process.is_empty() {
+            let next = self.events_to_process.pop().unwrap().0;
+            self.log
+                .push(SimLogEntry::event_processed(SimTime::now(), &next));
+
+            let advance_duration = next.time.checked_sub(&SimTime::now());
+            if let Some(advance_duration) = advance_duration {
+                debug!("Advancing time by {:?}ms", advance_duration.as_millis());
+                MockClock::advance(advance_duration);
+            }
 
             trace!(
                 "Performing action: {:?} at time {:?}ms",
@@ -181,19 +235,11 @@ impl ClusterSim {
             );
 
             match next.action {
-                SimulatorAction::TickClock => {
-                    // Wakes up any servers waiting for messages so they can update their clocks
-                    // and allow all servers to perform any time sensitive actions
-                    for (_, server_process) in self.servers.iter_mut() {
-                        server_process.tick();
-                    }
-                }
-
                 SimulatorAction::SendOverNetwork(network_message) => {
                     trace!(
                             "DELIVER NETWORK MESSAGE: msg_time = {time:?}ms, mock_time={mock_time:?}ms -- ({from:?} -> {to:?}): {rpc_message:?}",
                             time = next.time.as_millis(),
-                            mock_time = self.current_time.as_millis(),
+                            mock_time = SimTime::now().as_millis(),
                             rpc_message = network_message,
                             from = network_message.from(),
                             to = network_message.to(),
@@ -206,7 +252,7 @@ impl ClusterSim {
                     trace!(
                             "PARTITION NETWORK: msg_time = {time:?}ms, mock_time={mock_time:?}ms -- Partitioning network: {partition:?}",
                             time = next.time.as_millis(),
-                            mock_time = self.current_time.as_millis(),
+                            mock_time = SimTime::now().as_millis(),
                             partition = partitions,
                         );
                     self.network.partition_network(partitions);
@@ -215,7 +261,7 @@ impl ClusterSim {
             }
 
             self.invariant_checker
-                .check_invariants(self.current_time, &mut self.log);
+                .check_invariants(SimTime::now(), &mut self.log);
 
             self.invariant_checker.get_current_leader().map(|leader| {
                 self.results.was_leader_elected = true;
@@ -227,7 +273,7 @@ impl ClusterSim {
     /// Runs the simulation until the given time has been reached.
     pub(crate) fn run_until_time(&mut self, time: Duration) {
         info!(
-            "Running simulation: current time = {current_time:?}, run until = {run_until:?}ms",
+            "Running simulation: current time = {current_time:?}, run until = {run_until:?}",
             current_time = MockClock::time(),
             run_until = time
         );
@@ -244,11 +290,112 @@ impl ClusterSim {
                 "Simulation time = {time:?}ms",
                 time = MockClock::time().as_millis()
             );
+            let time_before_step = MockClock::time();
             self.run_step();
+            let time_after_step = MockClock::time();
+
+            assert!(
+                time_after_step >= time_before_step,
+                "Simulator time went backwards! This is a bug in the simulator!"
+            )
         }
         info!(
             "Finished simulation! time = {current_time:?}ms",
             current_time = MockClock::time().as_millis()
-        )
+        );
+
+        if let Err(_) = self.log.flush() {
+            panic!("Failed to flush simulation log to disk, it may be incomplete!");
+        }
     }
 }
+
+// mod test {
+//     use std::time::Duration;
+//     use test_log::test;
+
+//     use raft_consensus::RaftConfig;
+//     use rand::{RngCore, SeedableRng};
+//     use rand_chacha::ChaCha8Rng;
+//     use tempfile::TempDir;
+//     use tracing::info;
+
+//     use crate::simulator::sim_log::SimLogEntry;
+
+//     use super::{
+//         sim_network::{LatencyMean, LatencyStdDev, PacketLossProbability, SimNetwork},
+//         ClusterSim,
+//     };
+
+//     fn new_rng(maybe_seed: Option<u64>) -> ChaCha8Rng {
+//         match maybe_seed {
+//             Some(seed) => ChaCha8Rng::seed_from_u64(seed),
+//             None => {
+//                 let mut rng = ChaCha8Rng::from_entropy();
+//                 let seed = rng.next_u64();
+//                 info!("====================================");
+//                 info!("RNG SEED FOR TESTS: {seed}", seed = seed);
+//                 info!("====================================");
+//                 ChaCha8Rng::seed_from_u64(seed)
+//             }
+//         }
+//     }
+
+//     fn new_sim(maybe_seed: Option<u64>, temp_dir: &TempDir) -> ClusterSim {
+//         let rng = new_rng(maybe_seed);
+
+//         let config = RaftConfig {
+//             leader_heartbeat_interval: Duration::from_millis(50),
+//             min_election_timeout_ms: 150,
+//             max_election_timeout_ms: 300,
+//         };
+
+//         let network = SimNetwork::with_defaults(
+//             5,
+//             PacketLossProbability(0.01),
+//             LatencyMean(5.0),
+//             LatencyStdDev(2.0),
+//         );
+
+//         let temp_dir_path = temp_dir.path().to_str().unwrap();
+//         let pwd = std::env::current_dir().unwrap();
+//         let log_file = pwd.join("..").join("test_sim.log");
+
+//         ClusterSim::new(
+//             5,
+//             network,
+//             config,
+//             rng,
+//             temp_dir_path.to_string(),
+//             log_file.as_path(),
+//         )
+//     }
+
+//     #[test]
+//     fn test_run_single_step() {
+//         let temp_dir = TempDir::new().unwrap();
+//         let mut sim = new_sim(None, &temp_dir);
+
+//         sim.run_until_time(Duration::from_secs(120));
+//         let log_entries = sim.log.iter().collect::<Vec<_>>();
+
+//         let queued_events = log_entries
+//             .iter()
+//             .filter(|entry| match entry {
+//                 SimLogEntry::EventQueued(_, _) => true,
+//                 _ => false,
+//             })
+//             .count();
+
+//         let processed_events = log_entries
+//             .iter()
+//             .filter(|entry| match entry {
+//                 SimLogEntry::EventProcessed(_, _) => true,
+//                 _ => false,
+//             })
+//             .count();
+
+//         assert!(queued_events > 0);
+//         assert_eq!(queued_events, processed_events);
+//     }
+// }

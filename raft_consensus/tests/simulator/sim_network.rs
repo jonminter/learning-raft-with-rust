@@ -22,8 +22,9 @@ use rand_distr::{Bernoulli, Distribution, LogNormal};
 use tracing::trace;
 
 use super::{
-    common::{ClockAdvance, SimLogCommand, SimTime},
-    sim_transport::SimNetworkRaftTransport,
+    common::{SimLogCommand, SimTime, WakeUpAtOrBefore},
+    sim_log::{LoggedSimEvent, SimLog, SimLogEntry},
+    sim_transport::SimNetworkRaftTransportConnector,
 };
 
 use rand_distr::num_traits::ToPrimitive;
@@ -43,7 +44,7 @@ pub(crate) struct NetworkConnectionQuality {
 }
 
 struct NetworkNode<C: LogCommand> {
-    maybe_unclaimed_transport: Option<SimNetworkRaftTransport>,
+    maybe_unclaimed_transport: Option<SimNetworkRaftTransportConnector>,
     incoming_message_tx: mpsc::Sender<RpcMessage<C>>,
 }
 
@@ -57,7 +58,7 @@ pub(crate) struct SimNetwork {
     /// Receiver side of channel that receives outgoing messages from the server processes
     outbound_message_rx: mpsc::Receiver<RpcMessage<SimLogCommand>>,
     /// Vec with oneshot channel receivers to listen for replies to messages delivered to the server processes
-    maybe_timer_rx: Option<mpsc::Receiver<ClockAdvance>>,
+    maybe_timer_rx: Option<mpsc::Receiver<WakeUpAtOrBefore>>,
 }
 
 impl SimNetwork {
@@ -117,7 +118,7 @@ impl SimNetwork {
             servers.insert(
                 *server_id,
                 NetworkNode {
-                    maybe_unclaimed_transport: Some(SimNetworkRaftTransport::new(
+                    maybe_unclaimed_transport: Some(SimNetworkRaftTransportConnector::new(
                         outbound_message_tx.clone(),
                         inbound_message_rx,
                         timer_tx.clone(),
@@ -163,7 +164,10 @@ impl SimNetwork {
     /// Called by the simulator when it is creating server processes
     /// After the network has been initialized it uses this method
     /// to take ownership of the transport object and give it to the server process
-    pub(crate) fn take_transport_for(&mut self, server_id: ServerId) -> SimNetworkRaftTransport {
+    pub(crate) fn take_transport_connector_for(
+        &mut self,
+        server_id: ServerId,
+    ) -> SimNetworkRaftTransportConnector {
         self.servers
             .get_mut(&server_id)
             .expect(
@@ -178,7 +182,7 @@ impl SimNetwork {
             .expect("SIM: Transport already claimed")
     }
 
-    pub(crate) fn take_timer_rx(&mut self) -> mpsc::Receiver<ClockAdvance> {
+    pub(crate) fn take_timer_rx(&mut self) -> mpsc::Receiver<WakeUpAtOrBefore> {
         self.maybe_timer_rx
             .take()
             .expect("SIM: Timer already taken!")
@@ -330,14 +334,22 @@ impl SimNetwork {
     pub(crate) fn get_all_queued_outbound_messages(
         &mut self,
         rng: &mut ChaCha8Rng,
+        log: &mut SimLog,
     ) -> Vec<(RpcMessage<SimLogCommand>, SimTime)> {
         let mut messages: Vec<(RpcMessage<SimLogCommand>, SimTime)> = Vec::new();
 
         while let Ok(message) = self.outbound_message_rx.try_recv() {
+            let message_cloned = message.clone();
             if let Some(message_to_be_delivered) =
                 self.determine_when_and_if_message_should_be_delivered(message, rng)
             {
                 messages.push(message_to_be_delivered);
+            } else {
+                let time = MockClock::time();
+                log.push(SimLogEntry::EventProcessed(
+                    SimTime(time),
+                    LoggedSimEvent::DroppedNetworkMessage(SimTime(time), message_cloned),
+                ));
             }
         }
 
@@ -354,7 +366,7 @@ impl SimNetwork {
         network_node
             .incoming_message_tx
             .send(message)
-            .expect("SIM: Could not send network message to server");
+            .expect("SIM: Could not send network message to server (raft thread shutdown?)");
     }
 }
 
@@ -363,7 +375,7 @@ mod tests {
 
     use raft_consensus::rpc_messages::RpcMessage;
     use raft_consensus::{
-        rpc_messages::Request, rpc_messages::RequestVote, LogIndex, RaftTransportBridge,
+        rpc_messages::Request, rpc_messages::RequestVote, LogIndex, RaftTransportConnector,
         RaftTransportError, ServerId, TermIndex,
     };
     use rand::RngCore;
@@ -371,6 +383,8 @@ mod tests {
     use rand_chacha::ChaCha8Rng;
     use tracing::info;
     use uuid::Uuid;
+
+    use crate::simulator::sim_log::SimLog;
 
     use super::{LatencyMean, LatencyStdDev, PacketLossProbability, SimNetwork};
 
@@ -399,7 +413,7 @@ mod tests {
             LatencyStdDev(0.0),
         );
 
-        let mut originating_server_transport = network.take_transport_for(ServerId(0));
+        let mut originating_server_transport = network.take_transport_connector_for(ServerId(0));
 
         let outgoing_message = Request::RequestVote(RequestVote {
             request_id: Uuid::new_v4(),
@@ -415,7 +429,10 @@ mod tests {
             panic!("Could not enqueue outgoing request! (transport shutdown)");
         }
 
-        let messages = network.get_all_queued_outbound_messages(&mut rng);
+        let tmpdir = tempfile::tempdir().unwrap();
+        let log_path = tmpdir.path().join("sim_log");
+        let mut sim_log = SimLog::new(&log_path.as_path());
+        let messages = network.get_all_queued_outbound_messages(&mut rng, &mut sim_log);
         assert_eq!(messages.len(), 1);
 
         let (message, _) = messages.get(0).unwrap();
@@ -438,7 +455,7 @@ mod tests {
             LatencyStdDev(0.0),
         );
 
-        let mut originating_server_transport = network.take_transport_for(ServerId(0));
+        let mut originating_server_transport = network.take_transport_connector_for(ServerId(0));
 
         let outgoing_message = Request::RequestVote(RequestVote {
             request_id: Uuid::new_v4(),
@@ -453,7 +470,10 @@ mod tests {
             panic!("Could not enqueue outgoing request! (transport shutdown)");
         }
 
-        let messages = network.get_all_queued_outbound_messages(&mut rng);
+        let tmpdir = tempfile::tempdir().unwrap();
+        let log_path = tmpdir.path().join("sim_log");
+        let mut sim_log = SimLog::new(&log_path.as_path());
+        let messages = network.get_all_queued_outbound_messages(&mut rng, &mut sim_log);
         assert_eq!(messages.len(), 0);
     }
 
@@ -466,7 +486,7 @@ mod tests {
             LatencyStdDev(0.0),
         );
 
-        let mut dest_server_transport = network.take_transport_for(ServerId(0));
+        let mut dest_server_transport = network.take_transport_connector_for(ServerId(0));
 
         let incoming_message = Request::RequestVote(RequestVote {
             request_id: Uuid::new_v4(),

@@ -27,7 +27,7 @@ pub(crate) enum Event<C: LogCommand> {
 
 #[derive(Debug, Clone)]
 pub(crate) enum Action<C: LogCommand> {
-    StartTickTimer(Duration),
+    SetNextTimeout(Duration),
     ApplyLogEntries(Vec<C>),
     OutgoingRpc(RpcMessage<C>),
 }
@@ -44,7 +44,7 @@ impl Node {
         other_servers: HashSet<ServerId>,
         config: &RaftConfig,
         rng: &mut ChaCha8Rng,
-    ) -> (Self, FirstTickTimer) {
+    ) -> (Self, FirstElectionTimeout) {
         let (initial_state, first_timer) =
             NodeState::<Follower>::new(server_id, other_servers, config, rng);
 
@@ -105,7 +105,7 @@ impl Node {
             let election_timeout = follower_state.reset_election_timer(config, rng);
             Ok((
                 follower_state.into(),
-                vec![Action::StartTickTimer(election_timeout)],
+                vec![Action::SetNextTimeout(election_timeout)],
             ))
         } else {
             Ok((self, vec![]))
@@ -379,7 +379,7 @@ impl NodeState<Leader> {
 
         self.inner.last_heartbeat_sent = self.current_time;
 
-        actions.push(Action::StartTickTimer(config.leader_heartbeat_interval));
+        actions.push(Action::SetNextTimeout(config.leader_heartbeat_interval));
 
         actions
     }
@@ -466,7 +466,7 @@ impl NodeState<Candidate> {
         self.inner.votes_received = HashSet::new();
         self.inner.votes_received.insert(self.server_id);
 
-        let mut start_tick_timer_and_request_votes = vec![Action::StartTickTimer(election_timeout)];
+        let mut start_tick_timer_and_request_votes = vec![Action::SetNextTimeout(election_timeout)];
 
         for other_server in self.other_servers.iter() {
             start_tick_timer_and_request_votes.push(Action::OutgoingRpc(RpcMessage::request_vote(
@@ -584,7 +584,7 @@ impl Transitions for NodeState<Candidate> {
     }
 }
 
-pub(crate) struct FirstTickTimer(pub(crate) Duration);
+pub(crate) struct FirstElectionTimeout(pub(crate) Duration);
 
 has_election_timer!(Follower);
 impl NodeState<Follower> {
@@ -593,7 +593,7 @@ impl NodeState<Follower> {
         other_servers: HashSet<ServerId>,
         config: &RaftConfig,
         rng: &mut ChaCha8Rng,
-    ) -> (Self, FirstTickTimer) {
+    ) -> (Self, FirstElectionTimeout) {
         let follower_state = Follower::new();
 
         let mut node_state = Self {
@@ -606,7 +606,7 @@ impl NodeState<Follower> {
             inner: follower_state,
         };
         let election_timeout = node_state.reset_election_timer(config, rng);
-        (node_state, FirstTickTimer(election_timeout))
+        (node_state, FirstElectionTimeout(election_timeout))
     }
 
     fn vote_in_election<C, PS>(
@@ -703,7 +703,7 @@ impl Transitions for NodeState<Follower> {
                         self.inner.leader_id = Some(req.from);
                         //TODO: Check if we have all entries up to leader term & prev log index, and replicate entries
                         let election_timeout = self.reset_election_timer(config, rng);
-                        (true, vec![Action::StartTickTimer(election_timeout)])
+                        (true, vec![Action::SetNextTimeout(election_timeout)])
                     };
                     let mut maybe_start_timer_and_ack =
                         self.ack_append_entries(storage, req, ack_success);

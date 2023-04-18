@@ -10,18 +10,18 @@ use std::path::Path;
 use std::time::Duration;
 use std::{thread, vec};
 
-use crate::common::RaftTransportBridge;
+use crate::common::RaftTransportConnector;
 
 use tracing::{info, trace};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RaftNodeState {
     Follower,
     Candidate,
     Leader,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RaftStateEvent {
     pub server_id: ServerId,
     pub current_state: RaftNodeState,
@@ -45,7 +45,7 @@ pub fn start_raft_in_new_thread<LC: LogCommand>(
     storage_path: String,
     config: RaftConfig,
     mut rng: ChaCha8Rng,
-    mut transport: impl RaftTransportBridge<LC> + 'static,
+    mut transport_connector: impl RaftTransportConnector<LC> + 'static,
     mut event_collector: impl RaftStateEventCollector + 'static,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
@@ -53,7 +53,8 @@ pub fn start_raft_in_new_thread<LC: LogCommand>(
 
         let mut storage = DefaultPersistentStorage::new(Path::new(&storage_path));
 
-        let (mut state, first_tick_timer) = Node::new(server_id, other_servers, &config, &mut rng);
+        let (mut state, first_election_timeout) =
+            Node::new(server_id, other_servers, &config, &mut rng);
         info!(
             "{:?}: Starting raft node with state: {:?}, term: {:?}",
             server_id,
@@ -65,17 +66,17 @@ pub fn start_raft_in_new_thread<LC: LogCommand>(
             storage.current_term(),
         );
 
-        let mut interval_until_next_timer_expires = first_tick_timer.0;
+        let mut max_wait_time = first_election_timeout.0;
         loop {
             trace!(
                 "Waiting {:?}ms for next message at time {:?}...",
-                interval_until_next_timer_expires.as_millis(),
+                max_wait_time.as_millis(),
                 start_time.elapsed().as_millis(),
             );
 
             let time_before_waiting = system_clock::now();
             let maybe_next_message =
-                transport.wait_for_next_incoming_message(interval_until_next_timer_expires);
+                transport_connector.wait_for_next_incoming_message(max_wait_time);
 
             trace!(
                 "Got next message: {:?} after waiting for {:?}, time is now {:?}",
@@ -92,14 +93,14 @@ pub fn start_raft_in_new_thread<LC: LogCommand>(
             ) {
                 Ok((new_state, actions)) => (new_state, actions),
                 Err(_) => {
-                    info!("Persisten storaget error, shutting down raft thread...");
-                    break;
+                    info!("Persistent storage error, shutting down raft thread...");
+                    return;
                 }
             };
 
             if let Err(_) = maybe_next_message {
                 info!("Transport shutdown, shutting down raft thread...");
-                break;
+                return;
             }
 
             let mut actions_after_processing_message =
@@ -114,7 +115,7 @@ pub fn start_raft_in_new_thread<LC: LogCommand>(
                         Ok((new_state, actions)) => (new_state, actions),
                         Err(_) => {
                             info!("Persistent storage error, shutting down raft thread...");
-                            break;
+                            return;
                         }
                     };
                     actions
@@ -122,7 +123,7 @@ pub fn start_raft_in_new_thread<LC: LogCommand>(
                     vec![]
                 };
 
-            interval_until_next_timer_expires = interval_until_next_timer_expires
+            max_wait_time = max_wait_time
                 .checked_sub(time_before_waiting.elapsed())
                 .unwrap_or(Duration::from_millis(0));
 
@@ -132,20 +133,20 @@ pub fn start_raft_in_new_thread<LC: LogCommand>(
             {
                 match action {
                     Action::OutgoingRpc(RpcMessage::Request(r)) => {
-                        if let Err(_) = transport.enqueue_outgoing_request(r) {
+                        if let Err(_) = transport_connector.enqueue_outgoing_request(r) {
                             info!("Transport shutdown, shutting down raft thread...");
-                            break;
+                            return;
                         }
                     }
                     Action::OutgoingRpc(RpcMessage::Reply(message)) => {
-                        if let Err(_) = transport.enqueue_reply(message) {
+                        if let Err(_) = transport_connector.enqueue_reply(message) {
                             info!("Transport shutdown, shutting down raft thread...");
-                            break;
+                            return;
                         }
                     }
-                    Action::StartTickTimer(timer_duration) => {
-                        trace!("Starting tick timer for duration {:?}", timer_duration);
-                        interval_until_next_timer_expires = timer_duration;
+                    Action::SetNextTimeout(timer_duration) => {
+                        trace!("Resetting wait timeout to duration {:?}", timer_duration);
+                        max_wait_time = timer_duration;
                     }
                     Action::ApplyLogEntries(_) => todo!(),
                 }

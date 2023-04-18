@@ -99,8 +99,10 @@ fn should_elect_leader_during_network_partition_if_we_have_quorum() {
         log_file.as_path(),
     );
 
+    info!("Current sim time is {time:?}", time = SimTime::now());
+
     sim.enqueue_event(SimulatorEvent {
-        time: SimTime::from_millis(0),
+        time: SimTime::now(),
         action: SimulatorAction::PartitionNetwork(vec![
             {
                 let mut partition = HashSet::new();
@@ -157,6 +159,7 @@ fn should_not_be_able_to_elect_leader_without_quorum() {
         log_file.as_path(),
     );
 
+    info!("Current sim time is {time:?}", time = SimTime::now());
     sim.enqueue_event(SimulatorEvent {
         time: SimTime::from_millis(0),
         action: SimulatorAction::PartitionNetwork(vec![

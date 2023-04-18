@@ -1,4 +1,4 @@
-use crate::grpc_transport::TransportInput;
+use crate::grpc_transport::TransportMessage;
 use crate::proto::raft_consensus_server::RaftConsensus;
 use crate::proto::{AppendEntriesRequest, AppendEntriesResponse, VoteRequest, VoteResponse};
 use raft_consensus::rpc_messages;
@@ -11,12 +11,12 @@ use tonic::{Request, Response, Status};
 /// Raft thrad and to receive outgoing requests from the Raft thread.
 #[derive(Debug)]
 pub struct RaftGrpcServerImpl {
-    raft_input_tx: mpsc::UnboundedSender<TransportInput>,
+    raft_input_tx: mpsc::UnboundedSender<TransportMessage>,
     maybe_transport_thread_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl RaftGrpcServerImpl {
-    pub fn new(raft_input_tx: mpsc::UnboundedSender<TransportInput>) -> RaftGrpcServerImpl {
+    pub fn new(raft_input_tx: mpsc::UnboundedSender<TransportMessage>) -> RaftGrpcServerImpl {
         RaftGrpcServerImpl {
             raft_input_tx,
             maybe_transport_thread_handle: None,
@@ -37,9 +37,9 @@ impl RaftGrpcServerImpl {
         &self,
         reply_tx: oneshot::Sender<rpc_messages::ReplyTo>,
         incoming_request: rpc_messages::Request<u64>,
-    ) -> Result<(), SendError<TransportInput>> {
+    ) -> Result<(), SendError<TransportMessage>> {
         self.raft_input_tx
-            .send(TransportInput::Request(reply_tx, incoming_request))?;
+            .send(TransportMessage::Request(reply_tx, incoming_request))?;
         self.maybe_transport_thread_handle
             .as_ref()
             .expect("GRPC BUG ALERT: Transport thread not registered!")

@@ -91,7 +91,7 @@ pub enum RaftTransportError {
 /// A trait that defines the interface for a network transport for Raft.
 /// This is used by the Raft node to send and receive messages from other nodes.
 /// Using a trait for this allows us to swap a different implementation for testing that uses a simulated network.
-pub trait RaftTransportBridge<C: LogCommand>: Send {
+pub trait RaftTransportConnector<C: LogCommand>: Send {
     /// Returns the next incoming message from the network.
     fn wait_for_next_incoming_message(
         &mut self,

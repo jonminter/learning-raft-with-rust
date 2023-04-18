@@ -7,17 +7,16 @@ use raft_consensus::{
 
 use super::common::{SimLogCommand, SimTime, SimulatorEvent};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum LoggedSimEvent {
-    Tick,
     SendOverNetwork(SimTime, RpcMessage<SimLogCommand>),
+    DroppedNetworkMessage(SimTime, RpcMessage<SimLogCommand>),
     PartitionNetwork(Vec<Vec<ServerId>>),
     HealNetworkPartition,
 }
 impl LoggedSimEvent {
     fn from_sim_event(event: &SimulatorEvent) -> Self {
         match &event.action {
-            super::common::SimulatorAction::TickClock => LoggedSimEvent::Tick,
             super::common::SimulatorAction::SendOverNetwork(msg) => {
                 LoggedSimEvent::SendOverNetwork(event.time, msg.clone())
             }
@@ -39,7 +38,7 @@ impl LoggedSimEvent {
 #[derive(Debug)]
 pub(crate) struct LoggedSimTime(pub(crate) Duration);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum SimLogEntry {
     EventQueued(SimTime, LoggedSimEvent),
     EventProcessed(SimTime, LoggedSimEvent),
@@ -71,35 +70,41 @@ impl SimLog {
             .expect("SIM: Could not write to log file");
         self.events.push(event);
     }
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &SimLogEntry> {
-        self.events.iter()
+    pub(crate) fn iter(&self) -> impl Iterator<Item = SimLogEntry> + '_{
+        self.events.iter().cloned()
     }
     pub(crate) fn reset(&mut self) {
         self.events.clear();
     }
 
+    pub(crate) fn flush(&mut self) -> Result<(), std::io::Error> {
+        self.log_file.flush()
+    }
+
     fn append_to_file(&mut self, event: &SimLogEntry) -> Result<(), std::io::Error> {
         match event {
-            SimLogEntry::EventQueued(time, event) => match event {
-                LoggedSimEvent::Tick => {}
+            SimLogEntry::EventQueued(queued_time, event) => match event {
+                LoggedSimEvent::DroppedNetworkMessage(_, _) => {}
                 LoggedSimEvent::SendOverNetwork(delivery_time, msg) => match msg {
                     RpcMessage::Request(req) => match req {
                         Request::AppendEntries(req) => {
                             writeln!(
                                 self.log_file,
-                                "TIME {:?}ms: SEND AppendEntries from {:?} to {:?} for term {:?} with latency {:?}ms",
-                                time.as_millis(), req.from, req.to, req.term, delivery_time.as_millis() - time.as_millis()
+                                "TIME {:?}ms: SEND AppendEntries from {:?} to {:?} for term {:?} with latency {:?}ms tbd at {:?} (req id: {:?})",
+                                queued_time.as_millis(), req.from, req.to, req.term, delivery_time.as_millis() - queued_time.as_millis(), delivery_time.as_millis(), req.request_id
                             )?;
                         }
                         Request::RequestVote(req) => {
                             writeln!(
                                 self.log_file,
-                                "TIME {:?}ms: SEND RequestVote from {:?} to {:?} for term {:?} with latency {:?}ms",
-                                time.as_millis(),
+                                "TIME {:?}ms: SEND RequestVote from {:?} to {:?} for term {:?} with latency {:?}ms tbd at {:?} (req id: {:?})",
+                                queued_time.as_millis(),
                                 req.from,
                                 req.to,
                                 req.term,
-                                delivery_time.as_millis() - time.as_millis()
+                                delivery_time.as_millis() - queued_time.as_millis(),   
+                                delivery_time.as_millis(),
+                                req.request_id
                             )?;
                         }
                     },
@@ -107,15 +112,15 @@ impl SimLog {
                         ReplyTo::AppendEntries(reply) => {
                             writeln!(
                                 self.log_file,
-                                "TIME {:?}ms: SEND AppendEntriesReply from {:?} to {:?} for term {:?} with latency {:?}ms",
-                                time.as_millis(), reply.from, reply.to, reply.term, delivery_time.as_millis() - time.as_millis()
+                                "TIME {:?}ms: SEND AppendEntriesReply from {:?} to {:?} for term {:?} with latency {:?}ms tbd at {:?} (req id: {:?})",
+                                queued_time.as_millis(), reply.from, reply.to, reply.term, delivery_time.as_millis() - queued_time.as_millis(), delivery_time.as_millis(), reply.request_id
                             )?;
                         }
                         ReplyTo::RequestVote(reply) => {
                             writeln!(
                                 self.log_file,
-                                "TIME {:?}ms: SEND RequestVoteReply from {:?} to {:?} for term {:?} with latency {:?}ms",
-                                time.as_millis(), reply.from, reply.to, reply.term, delivery_time.as_millis() - time.as_millis()
+                                "TIME {:?}ms: SEND RequestVoteReply from {:?} to {:?} for term {:?} with latency {:?}ms tbd at {:?} (req id: {:?})",
+                                queued_time.as_millis(), reply.from, reply.to, reply.term, delivery_time.as_millis() - queued_time.as_millis(), delivery_time.as_millis(), reply.request_id
                             )?;
                         }
                     },
@@ -123,64 +128,93 @@ impl SimLog {
                 LoggedSimEvent::PartitionNetwork(_) => {}
                 LoggedSimEvent::HealNetworkPartition => {}
             },
-            SimLogEntry::EventProcessed(time, event) => {
-                match event {
-                    LoggedSimEvent::Tick => {}
-                    LoggedSimEvent::SendOverNetwork(_, msg) => {
-                        match msg {
-                            RpcMessage::Request(req) => match req {
-                                rpc_messages::Request::AppendEntries(req) => {
-                                    writeln!(
+            SimLogEntry::EventProcessed(time, event) => match event {
+                LoggedSimEvent::DroppedNetworkMessage(_, msg) => match msg {
+                    RpcMessage::Request(req) => match req {
+                        rpc_messages::Request::AppendEntries(req) => {
+                            writeln!(
                                 self.log_file,
-                                "TIME {:?}ms: RECV AppendEntries from {:?} to {:?} for term {:?}",
-                                time.as_millis(), req.from, req.to, req.term
+                                "TIME {:?}ms: DROPPED AppendEntries from {:?} to {:?} for term {:?} (req id: {:?})",
+                                time.as_millis(), req.from, req.to, req.term, req.request_id
                             )?;
-                                }
-                                rpc_messages::Request::RequestVote(req) => {
-                                    writeln!(
-                                self.log_file,
-                                "TIME {:?}ms: RECV RequestVote from {:?} to {:?} for term {:?}",
-                                time.as_millis(), req.from, req.to, req.term
-                            )?;
-                                }
-                            },
-                            RpcMessage::Reply(reply) => match reply {
-                                rpc_messages::ReplyTo::AppendEntries(reply) => {
-                                    writeln!(
-                                self.log_file,
-                                "TIME {:?}ms: RECV AppendEntriesReply from {:?} to {:?} for term {:?}",
-                                time.as_millis(), reply.from, reply.to, reply.term
-                            )?;
-                                }
-                                rpc_messages::ReplyTo::RequestVote(reply) => {
-                                    writeln!(
-                                self.log_file,
-                                "TIME {:?}ms: RECV RequestVoteReply from {:?} to {:?} for term {:?}",
-                                time.as_millis(), reply.from, reply.to, reply.term
-                            )?;
-                                }
-                            },
                         }
-                    }
-                    LoggedSimEvent::PartitionNetwork(partitions) => {
-                        writeln!(
-                            self.log_file,
-                            "TIME {:?}ms: PartitionNetwork...",
-                            time.as_millis()
-                        )?;
-                        for partition in partitions {
-                            writeln!(self.log_file, "    Partition: {:?}", partition)?;
+                        rpc_messages::Request::RequestVote(req) => {
+                            writeln!(
+                                self.log_file,
+                                "TIME {:?}ms: DROPPED RequestVote from {:?} to {:?} for term {:?} (req id: {:?})",
+                                time.as_millis(), req.from, req.to, req.term, req.request_id
+                            )?;
                         }
-                    }
-                    LoggedSimEvent::HealNetworkPartition => {
-                        writeln!(
-                            self.log_file,
-                            "TIME {:?}ms: HealNetworkPartition",
-                            time.as_millis()
-                        )?;
+                    },
+                    RpcMessage::Reply(reply) => match reply {
+                        rpc_messages::ReplyTo::AppendEntries(reply) => {
+                            writeln!(
+                                self.log_file,
+                                "TIME {:?}ms: DROPPED AppendEntriesReply from {:?} to {:?} for term {:?} (req id: {:?})",
+                                time.as_millis(), reply.from, reply.to, reply.term, reply.request_id
+                            )?;
+                        }
+                        rpc_messages::ReplyTo::RequestVote(reply) => {
+                            writeln!(
+                                self.log_file,
+                                "TIME {:?}ms: DROPPED RequestVoteReply from {:?} to {:?} for term {:?} (req id: {:?})",
+                                time.as_millis(), reply.from, reply.to, reply.term, reply.request_id
+                            )?;
+                        }
+                    },
+                },
+                LoggedSimEvent::SendOverNetwork(_, msg) => match msg {
+                    RpcMessage::Request(req) => match req {
+                        rpc_messages::Request::AppendEntries(req) => {
+                            writeln!(
+                                self.log_file,
+                                "TIME {:?}ms: RECV AppendEntries from {:?} to {:?} for term {:?} (req id: {:?})",
+                                time.as_millis(), req.from, req.to, req.term, req.request_id
+                            )?;
+                        }
+                        rpc_messages::Request::RequestVote(req) => {
+                            writeln!(
+                                self.log_file,
+                                "TIME {:?}ms: RECV RequestVote from {:?} to {:?} for term {:?} (req id: {:?})",
+                                time.as_millis(), req.from, req.to, req.term, req.request_id
+                            )?;
+                        }
+                    },
+                    RpcMessage::Reply(reply) => match reply {
+                        rpc_messages::ReplyTo::AppendEntries(reply) => {
+                            writeln!(
+                                self.log_file,
+                                "TIME {:?}ms: RECV AppendEntriesReply from {:?} to {:?} for term {:?} (req id: {:?})",
+                                time.as_millis(), reply.from, reply.to, reply.term,     reply.request_id
+                            )?;
+                        }
+                        rpc_messages::ReplyTo::RequestVote(reply) => {
+                            writeln!(
+                                self.log_file,
+                                "TIME {:?}ms: RECV RequestVoteReply from {:?} to {:?} for term {:?} (req id: {:?})",
+                                time.as_millis(), reply.from, reply.to, reply.term, reply.request_id
+                            )?;
+                        }
+                    },
+                },
+                LoggedSimEvent::PartitionNetwork(partitions) => {
+                    writeln!(
+                        self.log_file,
+                        "TIME {:?}ms: PartitionNetwork...",
+                        time.as_millis()
+                    )?;
+                    for partition in partitions {
+                        writeln!(self.log_file, "    Partition: {:?}", partition)?;
                     }
                 }
-            }
+                LoggedSimEvent::HealNetworkPartition => {
+                    writeln!(
+                        self.log_file,
+                        "TIME {:?}ms: HealNetworkPartition",
+                        time.as_millis()
+                    )?;
+                }
+            },
             SimLogEntry::ServerStateUpdate(time, server_states) => {
                 writeln!(
                     self.log_file,

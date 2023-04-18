@@ -69,14 +69,30 @@ impl InvariantChecker {
 
     /// Check that Raft invariants are not violated.
     pub(crate) fn check_invariants(&mut self, time: SimTime, log: &mut SimLog) {
+        let old_server_states = self.server_states.clone();
         while let Ok(event) = self.event_rx.try_recv() {
             self.check_state_change_invariants(event);
             self.server_states.insert(event.server_id, event);
         }
-        log.push(SimLogEntry::ServerStateUpdate(
-            time,
-            self.get_current_state(),
-        ));
+        let current_state = self.get_current_state();
+
+        let new_state_has_changes = current_state.iter().any(|(id, old_state)| {
+            if let Some(new_state) = old_server_states.get(id) {
+                old_state != new_state
+            } else {
+                true
+            }
+        });
+        let servers_removed = old_server_states
+            .keys()
+            .any(|id| !current_state.contains_key(id));
+
+        if new_state_has_changes || servers_removed {
+            log.push(SimLogEntry::ServerStateUpdate(
+                time,
+                self.get_current_state(),
+            ));
+        }
 
         self.assert_at_most_one_leader_in_term();
     }

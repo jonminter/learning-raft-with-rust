@@ -74,7 +74,13 @@ impl<C: LogCommand> DefaultPersistentStorage<C> {
                 f.try_clone()
                     .map(|f_cloned| (BufReader::new(f), BufWriter::new(f_cloned)))
             })
-            .expect("OPEN ELEC FILE: Could not open election file and set file size!");
+            .expect(
+                format!(
+                    "OPEN ELEC FILE: Could not open election file {:?} and set file size!",
+                    log_path
+                )
+                .as_str(),
+            );
 
         if election_file_exists {
             let header = get_election_bincode()

@@ -8,7 +8,7 @@ use raft_consensus::RaftTransportError;
 use raft_consensus::ServerId;
 use tonic::transport::Channel;
 
-use raft_consensus::RaftTransportBridge;
+use raft_consensus::RaftTransportConnector;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::thread;
@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
 #[derive(Debug)]
-pub enum TransportInput {
+pub enum TransportMessage {
     Request(
         oneshot::Sender<rpc_messages::ReplyTo>,
         rpc_messages::Request<u64>,
@@ -30,18 +30,18 @@ pub enum TransportInput {
 }
 
 #[derive(Debug)]
-pub struct RaftGrpcTransportBridge {
-    raft_input_rx: mpsc::UnboundedReceiver<TransportInput>,
+pub struct RaftGrpcTransportConnector {
+    raft_input_rx: mpsc::UnboundedReceiver<TransportMessage>,
     raft_output_tx: mpsc::UnboundedSender<rpc_messages::Request<u64>>,
     thread_handle: Option<thread::Thread>,
     reply_channels: HashMap<Uuid, oneshot::Sender<rpc_messages::ReplyTo>>,
 }
-impl RaftGrpcTransportBridge {
+impl RaftGrpcTransportConnector {
     pub fn new(
-        raft_input_rx: mpsc::UnboundedReceiver<TransportInput>,
+        raft_input_rx: mpsc::UnboundedReceiver<TransportMessage>,
         raft_output_tx: mpsc::UnboundedSender<rpc_messages::Request<u64>>,
-    ) -> RaftGrpcTransportBridge {
-        RaftGrpcTransportBridge {
+    ) -> RaftGrpcTransportConnector {
+        RaftGrpcTransportConnector {
             raft_input_rx,
             raft_output_tx,
             thread_handle: None,
@@ -50,7 +50,7 @@ impl RaftGrpcTransportBridge {
     }
 }
 
-impl RaftTransportBridge<u64> for RaftGrpcTransportBridge {
+impl RaftTransportConnector<u64> for RaftGrpcTransportConnector {
     /// Raft thread calls this method to retrieve the next message to process
     /// This method blocks the Raft thread until a message is available or the max_wait time has elapsed
     /// If the max_wait time has elapsed without receiving a message, this method returns None
@@ -72,11 +72,11 @@ impl RaftTransportBridge<u64> for RaftGrpcTransportBridge {
 
         loop {
             match self.raft_input_rx.try_recv() {
-                Ok(TransportInput::Request(reply_tx, message)) => {
+                Ok(TransportMessage::Request(reply_tx, message)) => {
                     self.reply_channels.insert(message.request_id(), reply_tx);
                     break Ok(Some(RpcMessage::Request(message)));
                 }
-                Ok(TransportInput::Reply(reply)) => {
+                Ok(TransportMessage::Reply(reply)) => {
                     break Ok(Some(RpcMessage::Reply(reply)));
                 }
                 Err(mpsc::error::TryRecvError::Empty) => {
@@ -118,7 +118,7 @@ impl RaftTransportBridge<u64> for RaftGrpcTransportBridge {
 
 async fn start_outgoing_message_sender(
     mut server_grpc_clients: HashMap<ServerId, RaftConsensusClient<Channel>>,
-    raft_input_tx: mpsc::UnboundedSender<TransportInput>,
+    raft_input_tx: mpsc::UnboundedSender<TransportMessage>,
     mut raft_output_rx: mpsc::UnboundedReceiver<rpc_messages::Request<u64>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -139,7 +139,7 @@ async fn start_outgoing_message_sender(
                             .await
                             .and_then(|response| {
                                 raft_input_tx
-                                    .send(TransportInput::Reply(
+                                    .send(TransportMessage::Reply(
                                         rpc_messages::ReplyTo::RequestVote(
                                             response.into_inner().into(),
                                         ),
@@ -169,7 +169,7 @@ async fn start_outgoing_message_sender(
                                 .await
                                 .and_then(|response| {
                                     raft_input_tx
-                                        .send(TransportInput::Reply(
+                                        .send(TransportMessage::Reply(
                                             rpc_messages::ReplyTo::AppendEntries(
                                                 response.into_inner().into(),
                                             ),
@@ -196,7 +196,7 @@ async fn start_outgoing_message_sender(
 
 pub struct RaftGrpcTransport {
     pub grpc_server: RaftGrpcServerImpl,
-    pub transport_bridge: RaftGrpcTransportBridge,
+    pub transport_bridge: RaftGrpcTransportConnector,
     pub message_sender_task: tokio::task::JoinHandle<()>,
 }
 impl RaftGrpcTransport {
@@ -218,11 +218,12 @@ impl RaftGrpcTransport {
 
         // Message queues between raft thread and gRPC transport
         // Each runs in a separate thread so need to communicate with channels
-        let (raft_input_tx, raft_input_rx) = mpsc::unbounded_channel::<TransportInput>();
+        let (raft_input_tx, raft_input_rx) = mpsc::unbounded_channel::<TransportMessage>();
         let (raft_output_tx, raft_output_rx) =
             mpsc::unbounded_channel::<rpc_messages::Request<u64>>();
 
-        let transport_bridge = RaftGrpcTransportBridge::new(raft_input_rx, raft_output_tx.clone());
+        let transport_bridge =
+            RaftGrpcTransportConnector::new(raft_input_rx, raft_output_tx.clone());
         let grpc_server = RaftGrpcServerImpl::new(raft_input_tx.clone());
 
         // Outbound RPC messages from raft thread are sent here

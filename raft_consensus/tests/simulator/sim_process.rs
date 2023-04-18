@@ -3,7 +3,7 @@ use std::{collections::HashSet, thread::JoinHandle};
 use raft_consensus::{start_raft_in_new_thread, RaftConfig, RaftStateEventCollector, ServerId};
 use rand_chacha::ChaCha8Rng;
 
-use super::sim_transport::SimNetworkRaftTransport;
+use super::sim_transport::SimNetworkRaftTransportConnector;
 
 /// A process in the simulation that represents a single server.
 /// This runs the Raft algorithm for this simulated server in it's own thread.
@@ -18,7 +18,7 @@ impl SimRaftProcess {
         config: RaftConfig,
         storage_path: String,
         mut rng: ChaCha8Rng,
-        transport: SimNetworkRaftTransport,
+        transport_connector: SimNetworkRaftTransportConnector,
         event_collector: impl RaftStateEventCollector + 'static,
     ) -> Self {
         rng.set_stream(server_id.0 as u64);
@@ -40,7 +40,7 @@ impl SimRaftProcess {
             storage_path,
             config,
             rng,
-            transport,
+            transport_connector,
             event_collector,
         );
         SimRaftProcess {
@@ -48,7 +48,7 @@ impl SimRaftProcess {
         }
     }
 
-    pub(crate) fn tick(&self) {
+    pub(crate) fn wake_up_transport_connector(&self) {
         self.thread_handle.thread().unpark();
     }
 }
