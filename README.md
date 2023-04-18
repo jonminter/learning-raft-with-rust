@@ -1,4 +1,4 @@
-# Raft Implementation Written In Rust
+# Raft Implementation Written In Rust ![example workflow](https://github.com/jonminter/learning-raft-with-rust/actions/workflows/rust.yml/badge.svg)
 
 Currently only leader election is implemented. Get/set commands are ignored.
 
