@@ -116,7 +116,7 @@ impl<C: LogCommand> DefaultPersistentStorage<C> {
 }
 
 impl<C: LogCommand> PersistentStorage<C> for DefaultPersistentStorage<C> {
-    fn voted_for_in_current_term(&self) -> Option<ServerId> {
+    fn vote_for_current_term(&self) -> Option<ServerId> {
         self.election
             .voted_for
             .and_then(|(last_vote_term, server_id)| {

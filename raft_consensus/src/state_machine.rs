@@ -624,14 +624,14 @@ impl NodeState<Follower> {
         // If votedFor is null or candidateId, and candidate’s log is at
         // least as up-to-date as receiver’s log (TODO), grant vote (§5.2, §5.4)
         let candidate_has_same_or_newer_term = vote_req.term >= storage.current_term();
-        let have_we_voted_for_this_term = storage.voted_for_in_current_term().is_some();
-        let voted_for_same_candidate_already = storage
-            .voted_for_in_current_term()
-            .map(|_| true)
+        let we_voted_this_term_already = storage.vote_for_current_term().is_some();
+        let we_voted_for_same_candidate_this_term_already = storage
+            .vote_for_current_term()
+            .map(|current_vote| current_vote == vote_req.from)
             .unwrap_or(false);
 
         let vote_granted = candidate_has_same_or_newer_term
-            && (!have_we_voted_for_this_term || voted_for_same_candidate_already);
+            && (!we_voted_this_term_already || we_voted_for_same_candidate_this_term_already);
 
         if vote_granted {
             info!(

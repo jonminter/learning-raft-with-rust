@@ -119,8 +119,8 @@ impl SimLog {
                         ReplyTo::RequestVote(reply) => {
                             writeln!(
                                 self.log_file,
-                                "TIME {:?}ms: SEND RequestVoteReply from {:?} to {:?} for term {:?} with latency {:?}ms tbd at {:?} (req id: {:?})",
-                                queued_time.as_millis(), reply.from, reply.to, reply.term, delivery_time.as_millis() - queued_time.as_millis(), delivery_time.as_millis(), reply.request_id
+                                "TIME {time:?}ms: SEND RequestVoteReply(vote_granted={vote}) from {from:?} to {to:?} for term {term:?} with latency {latency:?}ms tbd at {delivery_time:?} (req id: {req_id:?})",
+                                time=queued_time.as_millis(), vote=reply.vote_granted, from=reply.from, to=reply.to, term=reply.term, latency=delivery_time.as_millis() - queued_time.as_millis(), delivery_time=delivery_time.as_millis(), req_id=reply.request_id
                             )?;
                         }
                     },
@@ -191,8 +191,8 @@ impl SimLog {
                         rpc_messages::ReplyTo::RequestVote(reply) => {
                             writeln!(
                                 self.log_file,
-                                "TIME {:?}ms: RECV RequestVoteReply from {:?} to {:?} for term {:?} (req id: {:?})",
-                                time.as_millis(), reply.from, reply.to, reply.term, reply.request_id
+                                "TIME {time:?}ms: RECV RequestVoteReply(vote_granted={vote:?}) from {from:?} to {to:?} for term {term:?} (req id: {req_id:?})",
+                                time=time.as_millis(), vote=reply.vote_granted, from=reply.from, to=reply.to, term=reply.term, req_id=reply.request_id
                             )?;
                         }
                     },
