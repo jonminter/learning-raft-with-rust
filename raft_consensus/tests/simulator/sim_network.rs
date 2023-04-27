@@ -19,7 +19,7 @@ use mock_instant::MockClock;
 use raft_consensus::{rpc_messages::RpcMessage, LogCommand, ServerId};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Bernoulli, Distribution, LogNormal};
-use tracing::trace;
+use tracing::{debug, trace};
 
 use super::{
     common::{SimLogCommand, SimTime, WakeUpAtOrBefore},
@@ -44,7 +44,6 @@ pub(crate) struct NetworkConnectionQuality {
 }
 
 struct NetworkNode<C: LogCommand> {
-    maybe_unclaimed_transport: Option<SimNetworkRaftTransportConnector>,
     incoming_message_tx: mpsc::Sender<RpcMessage<C>>,
 }
 
@@ -55,9 +54,13 @@ pub(crate) struct SimNetwork {
     servers: HashMap<ServerId, NetworkNode<SimLogCommand>>,
     /// Map of server IDs to probability of packet loss, mean latency, std dev for latency ((server_id, server_id) -> (probability of message being dropped, mean latency, standard deviation)
     connections: HashMap<(ServerId, ServerId), NetworkConnectionQuality>,
+    /// Sender side of channel that sends outgoing messages from server process to network to be delivered to other servers
+    outbound_message_tx: mpsc::Sender<RpcMessage<SimLogCommand>>,
     /// Receiver side of channel that receives outgoing messages from the server processes
     outbound_message_rx: mpsc::Receiver<RpcMessage<SimLogCommand>>,
-    /// Vec with oneshot channel receivers to listen for replies to messages delivered to the server processes
+    /// Used by server transport connector to register a wake up request
+    timer_tx: mpsc::Sender<WakeUpAtOrBefore>,
+    /// Used to retrieve wake up requests
     maybe_timer_rx: Option<mpsc::Receiver<WakeUpAtOrBefore>>,
 }
 
@@ -112,26 +115,15 @@ impl SimNetwork {
         let (timer_tx, timer_rx) = mpsc::channel();
 
         let server_ids: HashSet<ServerId> = network.keys().map(|(from, _)| from).cloned().collect();
-        let mut servers = HashMap::new();
-        for server_id in &server_ids {
-            let (inbound_message_tx, inbound_message_rx) = mpsc::channel();
-            servers.insert(
-                *server_id,
-                NetworkNode {
-                    maybe_unclaimed_transport: Some(SimNetworkRaftTransportConnector::new(
-                        outbound_message_tx.clone(),
-                        inbound_message_rx,
-                        timer_tx.clone(),
-                    )),
-                    incoming_message_tx: inbound_message_tx,
-                },
-            );
-        }
+        let servers = HashMap::new();
+
         SimNetwork {
             server_ids,
             servers,
             connections: network,
+            outbound_message_tx,
             outbound_message_rx,
+            timer_tx,
             maybe_timer_rx: Some(timer_rx),
         }
     }
@@ -164,22 +156,22 @@ impl SimNetwork {
     /// Called by the simulator when it is creating server processes
     /// After the network has been initialized it uses this method
     /// to take ownership of the transport object and give it to the server process
-    pub(crate) fn take_transport_connector_for(
+    pub(crate) fn join_network_and_take_transport_connector(
         &mut self,
         server_id: ServerId,
     ) -> SimNetworkRaftTransportConnector {
-        self.servers
-            .get_mut(&server_id)
-            .expect(
-                format!(
-                    "SIM: Server with ID {server_id:?} not found",
-                    server_id = server_id
-                )
-                .as_str(),
-            )
-            .maybe_unclaimed_transport
-            .take()
-            .expect("SIM: Transport already claimed")
+        let (inbound_message_tx, inbound_message_rx) = mpsc::channel();
+        self.servers.insert(
+            server_id,
+            NetworkNode {
+                incoming_message_tx: inbound_message_tx,
+            },
+        );
+        SimNetworkRaftTransportConnector::new(
+            self.outbound_message_tx.clone(),
+            inbound_message_rx,
+            self.timer_tx.clone(),
+        )
     }
 
     pub(crate) fn take_timer_rx(&mut self) -> mpsc::Receiver<WakeUpAtOrBefore> {
@@ -363,10 +355,9 @@ impl SimNetwork {
             to = target
         ));
 
-        network_node
-            .incoming_message_tx
-            .send(message)
-            .expect("SIM: Could not send network message to server (raft thread shutdown?)");
+        if let Err(_) = network_node.incoming_message_tx.send(message) {
+            debug!("SIM: Could not send network message to server (raft thread shutdown?)");
+        }
     }
 }
 
@@ -421,7 +412,8 @@ mod tests {
             LatencyStdDev(0.0),
         );
 
-        let mut originating_server_transport = network.take_transport_connector_for(ServerId(0));
+        let mut originating_server_transport =
+            network.join_network_and_take_transport_connector(ServerId(0));
 
         let outgoing_message = Request::RequestVote(RequestVote {
             request_id: Uuid::new_v4(),
@@ -461,7 +453,8 @@ mod tests {
             LatencyStdDev(0.0),
         );
 
-        let mut originating_server_transport = network.take_transport_connector_for(ServerId(0));
+        let mut originating_server_transport =
+            network.join_network_and_take_transport_connector(ServerId(0));
 
         let outgoing_message = Request::RequestVote(RequestVote {
             request_id: Uuid::new_v4(),
@@ -490,7 +483,8 @@ mod tests {
             LatencyStdDev(0.0),
         );
 
-        let mut dest_server_transport = network.take_transport_connector_for(ServerId(0));
+        let mut dest_server_transport =
+            network.join_network_and_take_transport_connector(ServerId(0));
 
         let incoming_message = Request::RequestVote(RequestVote {
             request_id: Uuid::new_v4(),

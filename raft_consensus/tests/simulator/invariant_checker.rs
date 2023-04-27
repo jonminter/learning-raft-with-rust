@@ -16,6 +16,7 @@ use super::{
 /// This is a simple implementation that collects all events and then checks them at each step of the simulation.
 /// It uses a channel to send events from the server processes to the aggregator which is used by the
 /// simulation to check invariants. The channel is needed since the simulated raft node runs in a separate thread.
+#[derive(Clone)]
 pub(crate) struct ServerProcessRaftStateEventCollector {
     event_tx: mpsc::Sender<RaftStateEvent>,
 }

@@ -29,6 +29,7 @@ use crate::simulator::sim_log::SimLogEntry;
 use self::common::SimTime;
 use self::common::SimulatorEvent;
 use self::common::WakeUpAtOrBefore;
+use self::invariant_checker::ServerProcessRaftStateEventCollector;
 use self::sim_log::SimLog;
 use self::sim_network::SimNetwork;
 use self::sim_process::SimRaftProcess;
@@ -39,7 +40,7 @@ use self::sim_process::SimRaftProcess;
 /// The simulation is also fast, as it does not use real time.
 pub(crate) struct ClusterSim {
     rng: ChaCha8Rng,
-    servers: HashMap<ServerId, SimRaftProcess>,
+    servers: HashMap<ServerId, SimRaftProcess<ServerProcessRaftStateEventCollector>>,
     network: SimNetwork,
     transport_wake_up_rx: mpsc::Receiver<WakeUpAtOrBefore>,
     events_to_process: BinaryHeap<Reverse<SimulatorEvent>>,
@@ -96,7 +97,7 @@ impl ClusterSim {
                 config.clone(),
                 storage_temp_dir.clone(),
                 rng.clone(),
-                network.take_transport_connector_for(sid),
+                &mut network,
                 invariant_checker.event_collector_for_server(),
             );
             servers.insert(sid, process);
@@ -146,6 +147,10 @@ impl ClusterSim {
     /// 3. Get the next simulator message to be processed and run the appropriate action (i.e. deliver a message to a server, partion the network, etc.)
     /// 4. Checks that no Raft invariants have been violated in the cluster
     fn run_step(&mut self) {
+        for (_, server_process) in self.servers.iter_mut() {
+            server_process.restart_if_needed(&mut self.network);
+        }
+
         let outbound_messages = self
             .network
             .get_all_queued_outbound_messages(&mut self.rng, &mut self.log);

@@ -3,23 +3,29 @@ use std::{collections::HashSet, thread::JoinHandle};
 use raft_consensus::{start_raft_in_new_thread, RaftConfig, RaftStateEventCollector, ServerId};
 use rand_chacha::ChaCha8Rng;
 
-use super::sim_transport::SimNetworkRaftTransportConnector;
+use super::{sim_network::SimNetwork, sim_transport::SimNetworkRaftTransportConnector};
 
 /// A process in the simulation that represents a single server.
 /// This runs the Raft algorithm for this simulated server in it's own thread.
 /// It uses the provided transport to send and to receive messages from other servers.
-pub(crate) struct SimRaftProcess {
-    pub(crate) thread_handle: JoinHandle<()>,
+pub(crate) struct SimRaftProcess<E: RaftStateEventCollector + Clone> {
+    server_id: ServerId,
+    config: RaftConfig,
+    rng: ChaCha8Rng,
+    other_servers: HashSet<ServerId>,
+    storage_path: String,
+    event_collector: E,
+    thread_handle: JoinHandle<()>,
 }
-impl SimRaftProcess {
+impl<E: RaftStateEventCollector + Clone + 'static> SimRaftProcess<E> {
     pub(crate) fn new(
         server_id: ServerId,
         max_id: u64,
         config: RaftConfig,
         storage_path: String,
         mut rng: ChaCha8Rng,
-        transport_connector: SimNetworkRaftTransportConnector,
-        event_collector: impl RaftStateEventCollector + 'static,
+        network_to_join: &mut SimNetwork,
+        event_collector: E,
     ) -> Self {
         rng.set_stream(server_id.0 as u64);
         assert!(
@@ -36,15 +42,36 @@ impl SimRaftProcess {
 
         let raft_thread_handle = start_raft_in_new_thread(
             server_id,
-            other_servers,
-            storage_path,
+            other_servers.clone(),
+            storage_path.clone(),
             config,
-            rng,
-            transport_connector,
-            event_collector,
+            rng.clone(),
+            network_to_join.join_network_and_take_transport_connector(server_id),
+            event_collector.clone(),
         );
         SimRaftProcess {
+            server_id,
+            rng,
+            config,
+            other_servers,
+            storage_path,
+            event_collector,
             thread_handle: raft_thread_handle,
+        }
+    }
+
+    pub(crate) fn restart_if_needed(&mut self, network_to_join: &mut SimNetwork) {
+        if self.thread_handle.is_finished() {
+            println!("Restarting server {}...", self.server_id.0);
+            self.thread_handle = start_raft_in_new_thread(
+                self.server_id,
+                self.other_servers.clone(),
+                self.storage_path.clone(),
+                self.config,
+                self.rng.clone(),
+                network_to_join.join_network_and_take_transport_connector(self.server_id),
+                self.event_collector.clone(),
+            );
         }
     }
 
