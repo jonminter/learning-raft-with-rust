@@ -53,6 +53,8 @@ pub(crate) enum SimulatorAction {
     SendOverNetwork(RpcMessage<SimLogCommand>),
     PartitionNetwork(Vec<HashSet<ServerId>>),
     HealNetworkPartition,
+    InjectIOFailureEveryNOps(u64),
+    RestoreIOFunctioning,
 }
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub(crate) struct SimulatorEvent {

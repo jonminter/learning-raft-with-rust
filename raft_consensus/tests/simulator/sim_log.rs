@@ -13,6 +13,8 @@ pub(crate) enum LoggedSimEvent {
     DroppedNetworkMessage(SimTime, RpcMessage<SimLogCommand>),
     PartitionNetwork(Vec<Vec<ServerId>>),
     HealNetworkPartition,
+    InjectIOFaultEveryNOps(u64),
+    RestoreIOFunctioning,
 }
 impl LoggedSimEvent {
     fn from_sim_event(event: &SimulatorEvent) -> Self {
@@ -30,6 +32,12 @@ impl LoggedSimEvent {
             }
             super::common::SimulatorAction::HealNetworkPartition => {
                 LoggedSimEvent::HealNetworkPartition
+            }
+            super::common::SimulatorAction::InjectIOFailureEveryNOps(n) => {
+                LoggedSimEvent::InjectIOFaultEveryNOps(*n)
+            }
+            super::common::SimulatorAction::RestoreIOFunctioning => {
+                LoggedSimEvent::RestoreIOFunctioning
             }
         }
     }
@@ -104,6 +112,8 @@ fn write_event_to_log_file(log_file: &mut File, event: &SimLogEntry) -> Result<(
             },
             LoggedSimEvent::PartitionNetwork(_) => {}
             LoggedSimEvent::HealNetworkPartition => {}
+            LoggedSimEvent::InjectIOFaultEveryNOps(_) => {}
+            LoggedSimEvent::RestoreIOFunctioning => {}
         },
         SimLogEntry::EventProcessed(time, event) => match event {
             LoggedSimEvent::DroppedNetworkMessage(_, msg) => match msg {
@@ -188,6 +198,21 @@ fn write_event_to_log_file(log_file: &mut File, event: &SimLogEntry) -> Result<(
                 writeln!(
                     log_file,
                     "TIME {:?}ms: HealNetworkPartition",
+                    time.as_millis()
+                )?;
+            }
+            LoggedSimEvent::InjectIOFaultEveryNOps(n) => {
+                writeln!(
+                    log_file,
+                    "TIME {:?}ms: InjectIOFaultEveryNOps({:?})",
+                    time.as_millis(),
+                    n
+                )?;
+            }
+            LoggedSimEvent::RestoreIOFunctioning => {
+                writeln!(
+                    log_file,
+                    "TIME {:?}ms: RestoreIOFunctioning",
                     time.as_millis()
                 )?;
             }

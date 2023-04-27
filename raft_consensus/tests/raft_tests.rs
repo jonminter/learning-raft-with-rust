@@ -15,6 +15,7 @@ use std::{
     char::MAX,
     collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicI64, AtomicU64},
     time::Duration,
 };
 use tempfile::TempDir;
@@ -219,18 +220,13 @@ const INSTRUCTION_PARTITION_NETWORK: &str = "PartitionNetwork";
 const INSTRUCTION_HEAL_NETWORK_PARTITION: &str = "HealNetworkPartition";
 const INSTRUCTION_FAIL_NODE: &str = "FailNode";
 const INSTRUCTION_RECOVER_NODE: &str = "RecoverNode";
-const FAIL_NEXT_IO_OPERATION: &str = "FailNextIOOperation";
-
-fn io_fault_injection_trigger_fn(crate_name: &str, file_name: &str, line_number: u32) {
-    println!(
-        "fault injected at {} {} {}",
-        crate_name, file_name, line_number
-    );
-    FAULT_INJECT_COUNTER.store(u64::MAX, std::sync::atomic::Ordering::Release);
-}
+const INJECT_IO_FAILURES: &str = "FailNextIOOperation";
+const RESTORE_IO_FUNCTIONING: &str = "RestoreIOFunctioning";
+const FAIL_EVERY_N_IO_OPS_CHOICES: [u64; 6] = [5, 5, 5, 100, 100, u64::MAX];
 
 impl Arbitrary for SimInstructionSequence {
     fn arbitrary(g: &mut quickcheck::Gen) -> Self {
+        let mut reduced_io_functioning = false;
         let failed_nodes = HashSet::<ServerId>::new();
         let mut network_partition: Option<Vec<HashSet<ServerId>>> = None;
 
@@ -241,7 +237,13 @@ impl Arbitrary for SimInstructionSequence {
         let num_instructions = g.size();
         debug!("num_instructions: {}", num_instructions);
         for _ in 0..num_instructions {
-            let mut options = vec![FAIL_NEXT_IO_OPERATION];
+            let mut options = vec![];
+
+            if reduced_io_functioning {
+                options.push(RESTORE_IO_FUNCTIONING);
+            } else {
+                options.push(INJECT_IO_FAILURES);
+            }
 
             match network_partition {
                 Some(_) => options.push(INSTRUCTION_HEAL_NETWORK_PARTITION),
@@ -304,8 +306,20 @@ impl Arbitrary for SimInstructionSequence {
                 }
                 INSTRUCTION_FAIL_NODE => {}
                 INSTRUCTION_RECOVER_NODE => {}
-                FAIL_NEXT_IO_OPERATION => {
-                    FAULT_INJECT_COUNTER.store(1, std::sync::atomic::Ordering::Release);
+                INJECT_IO_FAILURES => {
+                    let fail_rate = g.choose(&FAIL_EVERY_N_IO_OPS_CHOICES).unwrap();
+                    sequence_of_events.push(SimulatorEvent {
+                        time: SimTime::from_millis(clock),
+                        action: SimulatorAction::InjectIOFailureEveryNOps(*fail_rate),
+                    });
+                    reduced_io_functioning = true;
+                }
+                RESTORE_IO_FUNCTIONING => {
+                    sequence_of_events.push(SimulatorEvent {
+                        time: SimTime::from_millis(clock),
+                        action: SimulatorAction::RestoreIOFunctioning,
+                    });
+                    reduced_io_functioning = false;
                 }
                 _ => panic!("Unknown instruction type"),
             }
@@ -326,8 +340,6 @@ fn run_simulation_with_sequence_of_events(
     maybe_rng_seed: Option<u64>,
     maybe_log_file_path: Option<&str>,
 ) {
-    set_trigger_function(io_fault_injection_trigger_fn);
-
     let rng = new_rng(maybe_rng_seed);
     let config = RaftConfig {
         leader_heartbeat_interval: Duration::from_millis(100),

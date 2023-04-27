@@ -146,7 +146,7 @@ impl<C: LogCommand> PersistentStorage<C> for DefaultPersistentStorage<C> {
 
     fn sync(&mut self) -> Result<(), PersistentStorageError> {
         Self::write_election_state(&self.election, &mut self.election_writer)?;
-        maybe!(self.election_writer.flush()).map_err(|_| PersistentStorageError::IoError)
+        maybe!(self.election_writer.flush()).map_err(|_| PersistentStorageError::IoError)t
     }
 
     fn current_term(&self) -> TermIndex {

@@ -5,6 +5,7 @@ pub(crate) mod sim_network;
 pub(crate) mod sim_process;
 pub(crate) mod sim_transport;
 
+use fault_injection::{set_trigger_function, FAULT_INJECT_COUNTER};
 use mock_instant::MockClock;
 use raft_consensus::{RaftConfig, ServerId};
 use tracing::{debug, warn};
@@ -18,6 +19,7 @@ use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -33,6 +35,19 @@ use self::invariant_checker::ServerProcessRaftStateEventCollector;
 use self::sim_log::SimLog;
 use self::sim_network::SimNetwork;
 use self::sim_process::SimRaftProcess;
+
+fn io_fault_injection_trigger_fn(crate_name: &str, file_name: &str, line_number: u32) {
+    println!(
+        "fault injected at {} {} {}",
+        crate_name, file_name, line_number
+    );
+    FAULT_INJECT_COUNTER.store(
+        FAIL_EVERY_N_IO_OPS.load(std::sync::atomic::Ordering::Acquire),
+        std::sync::atomic::Ordering::Release,
+    );
+}
+
+const FAIL_EVERY_N_IO_OPS: AtomicU64 = AtomicU64::new(u64::MAX);
 
 /// A simulation of a cluster of Raft servers.
 /// This is used to test the Raft algorithm in a controlled environment.
@@ -69,6 +84,7 @@ impl ClusterSim {
             network.server_ids.len() as u64,
             "Network should have the same number of servers as the cluster"
         );
+        set_trigger_function(io_fault_injection_trigger_fn);
         MockClock::set_time(Duration::from_millis(0));
 
         let timer_rx = network.take_timer_rx();
@@ -235,6 +251,13 @@ impl ClusterSim {
                     self.network.partition_network(partitions);
                 }
                 SimulatorAction::HealNetworkPartition => self.network.heal_network_partition(),
+                SimulatorAction::InjectIOFailureEveryNOps(n) => {
+                    FAIL_EVERY_N_IO_OPS.store(n, std::sync::atomic::Ordering::Release);
+                    FAULT_INJECT_COUNTER.store(1, std::sync::atomic::Ordering::Release);
+                }
+                SimulatorAction::RestoreIOFunctioning => {
+                    FAULT_INJECT_COUNTER.store(u64::MAX, std::sync::atomic::Ordering::Release);
+                }
             }
 
             self.invariant_checker
