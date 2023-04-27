@@ -12,6 +12,8 @@ use bincode::Options;
 use serde::Deserialize;
 use serde::Serialize;
 
+use fault_injection::maybe;
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Election {
     current_term: TermIndex,
@@ -40,6 +42,13 @@ fn get_election_bincode() -> WALBincodeOptions {
         .with_little_endian()
 }
 
+fn bincode_to_io_error(error_kind: Box<bincode::ErrorKind>) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Other,
+        format!("Bincode error: {:?}", error_kind),
+    )
+}
+
 /// WAL, should only be used from one thread
 #[derive(Debug)]
 pub struct DefaultPersistentStorage<C: LogCommand> {
@@ -64,7 +73,7 @@ impl<C: LogCommand> DefaultPersistentStorage<C> {
     fn open_election_file(log_path: &Path) -> (Election, BufWriter<File>) {
         let file_size: usize = mem::size_of::<Election>();
         let election_file_exists = log_path.join("election").exists();
-        let (reader, mut writer) = File::options()
+        let (reader, mut writer) = maybe!(File::options()
             .create(true)
             .read(true)
             .write(true)
@@ -73,14 +82,14 @@ impl<C: LogCommand> DefaultPersistentStorage<C> {
             .and_then(|f| {
                 f.try_clone()
                     .map(|f_cloned| (BufReader::new(f), BufWriter::new(f_cloned)))
-            })
-            .expect(
-                format!(
-                    "OPEN ELEC FILE: Could not open election file {:?} and set file size!",
-                    log_path
-                )
-                .as_str(),
-            );
+            }))
+        .expect(
+            format!(
+                "OPEN ELEC FILE: Could not open election file {:?} and set file size!",
+                log_path
+            )
+            .as_str(),
+        );
 
         if election_file_exists {
             let header = get_election_bincode()
@@ -94,9 +103,7 @@ impl<C: LogCommand> DefaultPersistentStorage<C> {
             };
             Self::write_election_state(&election, &mut writer)
                 .expect("OPEN ELEC FILE: Could not write initial state to election file!");
-            writer
-                .flush()
-                .expect("OPEN ELEC FILE: Could not fsync header to WAL!");
+            maybe!(writer.flush()).expect("OPEN ELEC FILE: Could not fsync header to WAL!");
             (election, writer)
         }
     }
@@ -105,12 +112,11 @@ impl<C: LogCommand> DefaultPersistentStorage<C> {
         election: &Election,
         election_writer: &mut BufWriter<File>,
     ) -> Result<(), PersistentStorageError> {
-        election_writer
-            .rewind()
-            .map_err(|_| PersistentStorageError::IoError)?;
-        get_election_bincode()
+        maybe!(election_writer.rewind()).map_err(|_| PersistentStorageError::IoError)?;
+        maybe!(get_election_bincode()
             .serialize_into(election_writer, election)
-            .map_err(|_| PersistentStorageError::IoError)?;
+            .map_err(bincode_to_io_error))
+        .map_err(|_| PersistentStorageError::IoError)?;
         Ok(())
     }
 }
@@ -140,10 +146,7 @@ impl<C: LogCommand> PersistentStorage<C> for DefaultPersistentStorage<C> {
 
     fn sync(&mut self) -> Result<(), PersistentStorageError> {
         Self::write_election_state(&self.election, &mut self.election_writer)?;
-        match self.election_writer.flush() {
-            Ok(_) => Ok(()),
-            Err(_) => Err(PersistentStorageError::IoError),
-        }
+        maybe!(self.election_writer.flush()).map_err(|_| PersistentStorageError::IoError)
     }
 
     fn current_term(&self) -> TermIndex {

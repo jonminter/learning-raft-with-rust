@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -61,7 +61,7 @@ impl ClusterSim {
         config: RaftConfig,
         rng: ChaCha8Rng,
         storage_temp_dir: String,
-        log_file_path: &Path,
+        log_file_path: Option<PathBuf>,
     ) -> Self {
         assert_eq!(
             num_servers,
@@ -281,93 +281,3 @@ impl ClusterSim {
         }
     }
 }
-
-// mod test {
-//     use std::time::Duration;
-//     use test_log::test;
-
-//     use raft_consensus::RaftConfig;
-//     use rand::{RngCore, SeedableRng};
-//     use rand_chacha::ChaCha8Rng;
-//     use tempfile::TempDir;
-//     use tracing::info;
-
-//     use crate::simulator::sim_log::SimLogEntry;
-
-//     use super::{
-//         sim_network::{LatencyMean, LatencyStdDev, PacketLossProbability, SimNetwork},
-//         ClusterSim,
-//     };
-
-//     fn new_rng(maybe_seed: Option<u64>) -> ChaCha8Rng {
-//         match maybe_seed {
-//             Some(seed) => ChaCha8Rng::seed_from_u64(seed),
-//             None => {
-//                 let mut rng = ChaCha8Rng::from_entropy();
-//                 let seed = rng.next_u64();
-//                 info!("====================================");
-//                 info!("RNG SEED FOR TESTS: {seed}", seed = seed);
-//                 info!("====================================");
-//                 ChaCha8Rng::seed_from_u64(seed)
-//             }
-//         }
-//     }
-
-//     fn new_sim(maybe_seed: Option<u64>, temp_dir: &TempDir) -> ClusterSim {
-//         let rng = new_rng(maybe_seed);
-
-//         let config = RaftConfig {
-//             leader_heartbeat_interval: Duration::from_millis(50),
-//             min_election_timeout_ms: 150,
-//             max_election_timeout_ms: 300,
-//         };
-
-//         let network = SimNetwork::with_defaults(
-//             5,
-//             PacketLossProbability(0.01),
-//             LatencyMean(5.0),
-//             LatencyStdDev(2.0),
-//         );
-
-//         let temp_dir_path = temp_dir.path().to_str().unwrap();
-//         let pwd = std::env::current_dir().unwrap();
-//         let log_file = pwd.join("..").join("test_sim.log");
-
-//         ClusterSim::new(
-//             5,
-//             network,
-//             config,
-//             rng,
-//             temp_dir_path.to_string(),
-//             log_file.as_path(),
-//         )
-//     }
-
-//     #[test]
-//     fn test_run_single_step() {
-//         let temp_dir = TempDir::new().unwrap();
-//         let mut sim = new_sim(None, &temp_dir);
-
-//         sim.run_until_time(Duration::from_secs(120));
-//         let log_entries = sim.log.iter().collect::<Vec<_>>();
-
-//         let queued_events = log_entries
-//             .iter()
-//             .filter(|entry| match entry {
-//                 SimLogEntry::EventQueued(_, _) => true,
-//                 _ => false,
-//             })
-//             .count();
-
-//         let processed_events = log_entries
-//             .iter()
-//             .filter(|entry| match entry {
-//                 SimLogEntry::EventProcessed(_, _) => true,
-//                 _ => false,
-//             })
-//             .count();
-
-//         assert!(queued_events > 0);
-//         assert_eq!(queued_events, processed_events);
-//     }
-// }

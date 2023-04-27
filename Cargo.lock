@@ -318,6 +318,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fault-injection"
+version = "1.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeca7f5585b265ca11574365e7d3aca66a4a50090f8e3e5088dd43ee6a4d2c8b"
+
+[[package]]
 name = "fixedbitset"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1110,6 +1116,7 @@ dependencies = [
  "clap",
  "divrem",
  "env_logger",
+ "fault-injection",
  "lazy_static",
  "mock_instant",
  "oneshot",

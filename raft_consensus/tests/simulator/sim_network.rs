@@ -229,7 +229,7 @@ impl SimNetwork {
 
     pub(crate) fn heal_network_partition(&mut self) {
         for connection in self.connections.values_mut() {
-            connection.packet_loss = Bernoulli::new(1.0).unwrap();
+            connection.packet_loss = Bernoulli::new(0.01).unwrap();
         }
     }
 
@@ -402,6 +402,14 @@ mod tests {
         }
     }
 
+    fn new_sim_log(log_file_name: Option<&str>) -> SimLog {
+        let log_file_path = log_file_name.map(|filename| {
+            let pwd = std::env::current_dir().unwrap();
+            pwd.join("..").join(filename)
+        });
+        SimLog::new(log_file_path)
+    }
+
     #[test]
     fn it_should_return_a_vec_with_all_queued_outbound_messages_from_servers() {
         let mut rng = new_rng(None);
@@ -429,9 +437,7 @@ mod tests {
             panic!("Could not enqueue outgoing request! (transport shutdown)");
         }
 
-        let tmpdir = tempfile::tempdir().unwrap();
-        let log_path = tmpdir.path().join("sim_log");
-        let mut sim_log = SimLog::new(&log_path.as_path());
+        let mut sim_log = new_sim_log(None);
         let messages = network.get_all_queued_outbound_messages(&mut rng, &mut sim_log);
         assert_eq!(messages.len(), 1);
 
@@ -470,9 +476,7 @@ mod tests {
             panic!("Could not enqueue outgoing request! (transport shutdown)");
         }
 
-        let tmpdir = tempfile::tempdir().unwrap();
-        let log_path = tmpdir.path().join("sim_log");
-        let mut sim_log = SimLog::new(&log_path.as_path());
+        let mut sim_log = new_sim_log(None);
         let messages = network.get_all_queued_outbound_messages(&mut rng, &mut sim_log);
         assert_eq!(messages.len(), 0);
     }

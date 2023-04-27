@@ -76,12 +76,10 @@ impl InvariantChecker {
         }
         let current_state = self.get_current_state();
 
-        let new_state_has_changes = current_state.iter().any(|(id, old_state)| {
-            if let Some(new_state) = old_server_states.get(id) {
-                old_state != new_state
-            } else {
-                true
-            }
+        let new_state_has_changes = current_state.iter().any(|(server_id, old_state)| {
+            old_server_states
+                .get(server_id)
+                .map_or(true, |new_state| old_state != new_state)
         });
         let servers_removed = old_server_states
             .keys()
@@ -123,7 +121,7 @@ impl InvariantChecker {
         // There should be at max a count of one for each term
         let mut nodes_that_think_they_are_leaders = HashMap::<TermIndex, HashSet<ServerId>>::new();
         // TermIndex -> Set of all nodes where at least one other node believes that node is the leader for this term
-        // Each set should only contain at most one item
+        // Each set should contain at most one item
         let mut nodes_that_other_nodes_see_as_leaders =
             HashMap::<TermIndex, HashSet<ServerId>>::new();
 
@@ -132,24 +130,32 @@ impl InvariantChecker {
                 RaftNodeState::Leader => {
                     nodes_that_think_they_are_leaders
                         .entry(server_state.current_term)
-                        .or_insert(HashSet::new());
-                    nodes_that_think_they_are_leaders
-                        .get_mut(&server_state.current_term)
-                        .expect("CLUSTER INVARIANT VIOLATED: Should have a set for nodes that think they are leaders this term")
-                        .insert(server_state.server_id);
+                        .and_modify(|servers| {
+                            servers.insert(server_state.server_id);
+                        })
+                        .or_insert_with(|| {
+                            let mut servers = HashSet::new();
+                            servers.insert(server_state.server_id);
+                            servers
+                        });
                 }
                 _ => (),
             }
 
             nodes_that_other_nodes_see_as_leaders
                 .entry(server_state.current_term)
-                .or_insert(HashSet::new());
-            server_state.leader_for_term.map(|leader| {
-                nodes_that_other_nodes_see_as_leaders
-                    .get_mut(&server_state.current_term)
-                    .expect("CLUSTER INVARIANT VIOLATED: Should have a set for this term")
-                    .insert(leader);
-            });
+                .and_modify(|servers| {
+                    if let Some(leader_id) = server_state.leader_for_term {
+                        servers.insert(leader_id);
+                    }
+                })
+                .or_insert_with(|| {
+                    let mut servers = HashSet::new();
+                    if let Some(leader_id) = server_state.leader_for_term {
+                        servers.insert(leader_id);
+                    }
+                    servers
+                });
         }
 
         nodes_that_think_they_are_leaders
